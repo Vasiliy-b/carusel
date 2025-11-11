@@ -10,11 +10,9 @@ RUN apt-get update && apt-get install -y \
 
 # Copy requirements
 COPY requirements.txt .
-COPY web_ui/requirements.txt web_ui_requirements.txt
 
-# Install Python dependencies
+# Install Python dependencies (includes everything: ADK + Web UI)
 RUN pip install --no-cache-dir -r requirements.txt
-RUN pip install --no-cache-dir -r web_ui_requirements.txt
 
 # Copy application code
 COPY . .
