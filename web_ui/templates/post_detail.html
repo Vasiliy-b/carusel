@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ post.title }} - Content Generator</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <header>
+        <div class="container">
+            <a href="/" class="back-btn">← Back to Gallery</a>
+            <h1>{{ post.title }}</h1>
+        </div>
+    </header>
+
+    <main class="container">
+        <div class="post-detail-layout">
+            <!-- Carousel Section -->
+            <div class="carousel-section">
+                <div class="carousel">
+                    {% if post.images %}
+                    <div class="carousel-container">
+                        <button class="carousel-btn prev" onclick="changeSlide(-1)">‹</button>
+                        
+                        <div class="carousel-slides">
+                            {% for image in post.images %}
+                            <div class="carousel-slide {% if loop.index == 1 %}active{% endif %}">
+                                <img src="{{ image.url }}" alt="Slide {{ image.index }}">
+                                <div class="slide-caption">
+                                    {% if post.image_texts[loop.index0] %}
+                                    <span class="slide-text">{{ post.image_texts[loop.index0] }}</span>
+                                    {% endif %}
+                                </div>
+                            </div>
+                            {% endfor %}
+                        </div>
+                        
+                        <button class="carousel-btn next" onclick="changeSlide(1)">›</button>
+                    </div>
+                    
+                    <div class="carousel-counter">
+                        <span id="currentSlide">1</span> / {{ post.total_images }}
+                    </div>
+                    
+                    <div class="carousel-thumbnails">
+                        {% for image in post.images %}
+                        <div class="thumbnail {% if loop.index == 1 %}active{% endif %}" 
+                             onclick="goToSlide({{ loop.index }})">
+                            <img src="{{ image.url }}" alt="Thumbnail {{ loop.index }}">
+                        </div>
+                        {% endfor %}
+                    </div>
+                    {% else %}
+                    <div class="no-images">No images generated</div>
+                    {% endif %}
+                </div>
+            </div>
+
+            <!-- Metadata Sidebar -->
+            <div class="metadata-section">
+                <div class="metadata-card">
+                    <h2>Post Details</h2>
+                    
+                    <div class="metadata-field">
+                        <label>Post ID</label>
+                        <p class="post-id-text">{{ post.post_id }}</p>
+                    </div>
+                    
+                    <div class="metadata-field">
+                        <label>Category</label>
+                        <p>{{ post.category }}</p>
+                    </div>
+                    
+                    <div class="metadata-field">
+                        <label>Theme</label>
+                        <p>{{ post.theme }}</p>
+                    </div>
+                    
+                    <div class="metadata-field">
+                        <label>Generated</label>
+                        <p>{{ post.generated }}</p>
+                    </div>
+                    
+                    <hr>
+                    
+                    <div class="metadata-field">
+                        <label>Caption</label>
+                        <p class="caption-text">{{ post.caption }}</p>
+                    </div>
+                    
+                    <div class="metadata-field">
+                        <label>Hashtags</label>
+                        <p class="hashtags">
+                            {% for tag in post.hashtags %}
+                            <span class="tag">{{ tag }}</span>
+                            {% endfor %}
+                        </p>
+                    </div>
+                    
+                    <hr>
+                    
+                    <div class="metadata-field">
+                        <label>Slide Texts</label>
+                        <ol class="slide-texts-list">
+                            {% for text in post.image_texts %}
+                            <li>{{ text }}</li>
+                            {% endfor %}
+                        </ol>
+                    </div>
+                    
+                    <div class="action-buttons">
+                        <a href="/download/{{ post.post_id }}" class="btn-secondary">Download All Images</a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        let currentSlide = 1;
+        const totalSlides = {{ post.total_images }};
+        
+        function changeSlide(direction) {
+            const slides = document.querySelectorAll('.carousel-slide');
+            const thumbnails = document.querySelectorAll('.thumbnail');
+            
+            slides[currentSlide - 1].classList.remove('active');
+            thumbnails[currentSlide - 1].classList.remove('active');
+            
+            currentSlide += direction;
+            if (currentSlide > totalSlides) currentSlide = 1;
+            if (currentSlide < 1) currentSlide = totalSlides;
+            
+            slides[currentSlide - 1].classList.add('active');
+            thumbnails[currentSlide - 1].classList.add('active');
+            
+            document.getElementById('currentSlide').textContent = currentSlide;
+        }
+        
+        function goToSlide(index) {
+            const slides = document.querySelectorAll('.carousel-slide');
+            const thumbnails = document.querySelectorAll('.thumbnail');
+            
+            slides[currentSlide - 1].classList.remove('active');
+            thumbnails[currentSlide - 1].classList.remove('active');
+            
+            currentSlide = index;
+            
+            slides[currentSlide - 1].classList.add('active');
+            thumbnails[currentSlide - 1].classList.add('active');
+            
+            document.getElementById('currentSlide').textContent = currentSlide;
+        }
+        
+        // Keyboard navigation
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'ArrowLeft') changeSlide(-1);
+            if (e.key === 'ArrowRight') changeSlide(1);
+        });
+    </script>
+</body>
+</html>
+

@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Content Generator - Post Gallery</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <header>
+        <div class="container">
+            <h1>Multi-Agent Content Generator</h1>
+            <button id="generateBtn" class="btn-primary" {% if active_job_id %}disabled{% endif %}>
+                {% if active_job_id %}Generating...{% else %}+ Generate New Post{% endif %}
+            </button>
+        </div>
+    </header>
+
+    <main class="container">
+        <div id="statusBar" class="status-bar {% if not active_job_id %}hidden{% endif %}">
+            <div class="spinner"></div>
+            <span id="statusText">AI agents are arguing about your carousel... This takes 2-3 min. They're perfectionists. 🤖</span>
+        </div>
+        
+        <script>
+            // Resume polling if there's an active job
+            {% if active_job_id %}
+            const resumeJobId = "{{ active_job_id }}";
+            if (resumeJobId) {
+                window.addEventListener('DOMContentLoaded', () => {
+                    currentJobId = resumeJobId;
+                    pollStatus();
+                });
+            }
+            {% endif %}
+        </script>
+
+        <div id="errorBar" class="error-bar hidden">
+            <span id="errorText"></span>
+            <button onclick="closeError()">×</button>
+        </div>
+
+        <div class="controls-section">
+            <div class="gallery-header">
+                <h2>Generated Posts</h2>
+                <p class="subtitle">{{ posts|length }} posts generated</p>
+            </div>
+            
+            <div class="style-editor">
+                <button id="toggleStyleBtn" class="btn-secondary-sm">⚙️ Image Style</button>
+                <div id="stylePanel" class="style-panel hidden">
+                    <label for="styleInput">Current Style (appended to every image prompt):</label>
+                    <textarea id="styleInput" rows="3">{{ current_style }}</textarea>
+                    <div class="style-actions">
+                        <button id="saveStyleBtn" class="btn-primary-sm">Save Style</button>
+                        <button id="resetStyleBtn" class="btn-secondary-sm">Reset to Default</button>
+                    </div>
+                    <p class="style-note">Changes apply to next generation only</p>
+                </div>
+            </div>
+        </div>
+
+        {% if posts %}
+        <div class="post-grid">
+            {% for post in posts %}
+            <div class="post-card" onclick="window.location.href='/post/{{ post.post_id }}'">
+                {% if post.thumbnail %}
+                <div class="post-thumbnail">
+                    <img src="{{ post.thumbnail }}" alt="{{ post.title }}">
+                    <div class="image-count">{{ post.image_count }} images</div>
+                </div>
+                {% else %}
+                <div class="post-thumbnail placeholder">
+                    <span>No images</span>
+                </div>
+                {% endif %}
+                
+                <div class="post-info">
+                    <h3>{{ post.title }}</h3>
+                    <p class="post-date">{{ post.date }}</p>
+                    <p class="post-id">{{ post.post_id }}</p>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <div class="empty-state">
+            <h3>No posts generated yet</h3>
+            <p>Click "Generate New Post" to create your first carousel</p>
+        </div>
+        {% endif %}
+    </main>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>
+
