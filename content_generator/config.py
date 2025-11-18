@@ -61,8 +61,10 @@ class Config:
     ENABLE_TEXT_OVERLAY_FALLBACK = os.getenv('ENABLE_TEXT_OVERLAY_FALLBACK', 'TRUE').upper() == 'TRUE'
     IMAGE_FORMAT = os.getenv('IMAGE_FORMAT', 'PNG').upper()
     IMAGE_QUALITY = int(os.getenv('IMAGE_QUALITY', '95'))
+    IMAGE_ASPECT_RATIO = os.getenv('IMAGE_ASPECT_RATIO', '1:1')  # 1:1, 4:5, 9:16, 16:9, etc.
     
     # Image Style Suffix (auto-appended to every image prompt for consistent styling)
+    # Default empty - only use when NOT using style reference images
     STYLE = os.getenv('STYLE', '')
     
     # ============================================
@@ -89,6 +91,19 @@ class Config:
     STATE_STORAGE_PATH = os.getenv('STATE_STORAGE_PATH', './state')
     IMAGE_GENERATION_TIMEOUT = int(os.getenv('IMAGE_GENERATION_TIMEOUT', '60'))
     TEXT_GENERATION_TIMEOUT = int(os.getenv('TEXT_GENERATION_TIMEOUT', '30'))
+    
+    # ============================================
+    # Image Upload Settings
+    # ============================================
+    MAX_REFERENCE_IMAGES = 2
+    ALLOWED_IMAGE_FORMATS = ['PNG', 'JPEG', 'JPG', 'WEBP']
+    MAX_UPLOAD_SIZE_MB = 10
+    REFERENCE_IMAGE_STORAGE = os.getenv('REFERENCE_IMAGE_STORAGE', './temp/reference_images')
+    
+    # ============================================
+    # Input Mode
+    # ============================================
+    DEFAULT_INPUT_MODE = os.getenv('DEFAULT_INPUT_MODE', 'sheet')  # 'sheet' or 'text'
     
     @classmethod
     def validate(cls):

@@ -21,12 +21,13 @@ COPY . .
 RUN mkdir -p output/posts logs
 
 # Expose port
-EXPOSE 5000
+EXPOSE 7821
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
-ENV STYLE="pastel colors, soft lighting, elegant, clean style, 3d render, high detail, 3d plasticine"
+ENV STYLE=""
+ENV PORT=7821
 
-# Run web UI
-CMD ["gunicorn", "-b", "0.0.0.0:5000", "-w", "1", "--timeout", "300", "web_ui.app:app"]
+# Run web UI with increased timeout for long-running generations
+CMD ["gunicorn", "-b", "0.0.0.0:7821", "-w", "1", "--timeout", "600", "web_ui.app:app"]
 

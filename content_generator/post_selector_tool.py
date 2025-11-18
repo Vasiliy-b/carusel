@@ -34,7 +34,9 @@ def select_current_post(tool_context: ToolContext) -> Dict[str, Any]:
         
         # Check if we've processed all posts
         if current_index >= len(filtered_posts):
-            logger.info("All posts have been processed")
+            logger.info("All posts have been processed - escalating to exit loop")
+            # Signal to LoopAgent to terminate
+            tool_context.actions.escalate = True
             return {
                 "status": "complete",
                 "message": f"All {len(filtered_posts)} posts processed"
@@ -49,9 +51,25 @@ def select_current_post(tool_context: ToolContext) -> Dict[str, Any]:
         # Store current post in state for other agents to access
         tool_context.state['current_post'] = current_post
         
+        # CRITICAL: Also store the actual content text separately for ContentAnalyzer
+        # Try rewrited_script first, fallback to original_script
+        content_text = current_post.get('rewrited_script') or current_post.get('original_script', '')
+        tool_context.state['post_content_text'] = content_text
+        
+        # Check if style reference is present and create flag for agents
+        has_style_ref = 'generation_reference_images' in tool_context.state and 'style' in tool_context.state.get('generation_reference_images', {})
+        has_persona_ref = 'generation_reference_images' in tool_context.state and 'persona' in tool_context.state.get('generation_reference_images', {})
+        
+        tool_context.state['has_style_reference'] = has_style_ref
+        tool_context.state['has_persona_reference'] = has_persona_ref
+        
         logger.info(f"✓ Selected post: {current_post.get('post_id', 'unknown')}")
         logger.info(f"  Category: {current_post.get('category', 'N/A')}")
         logger.info(f"  Theme: {current_post.get('theme', 'N/A')}")
+        logger.info(f"  Content length: {len(content_text)} chars")
+        logger.info(f"  Content preview: {content_text[:100]}...")
+        logger.info(f"  Style reference: {has_style_ref}")
+        logger.info(f"  Persona reference: {has_persona_ref}")
         
         return {
             "status": "ready",
@@ -73,14 +91,15 @@ def select_current_post(tool_context: ToolContext) -> Dict[str, Any]:
 def clear_post_state(tool_context: ToolContext) -> Dict[str, Any]:
     """
     Clear post-specific state after processing completes.
-    Prepares for next post iteration.
+    Also signals loop termination since we only process 1 post.
     
     Returns:
         Confirmation dictionary
     """
     try:
+        logger.info("CLEAR_STATE: Clearing post-specific state and terminating loop")
+        
         # Clear post-specific data
-        # CRITICAL: Reset image counter for next post!
         keys_to_clear = [
             'current_post',
             'content_analysis',
@@ -92,22 +111,33 @@ def clear_post_state(tool_context: ToolContext) -> Dict[str, Any]:
         cleared = []
         for key in keys_to_clear:
             if key in tool_context.state:
-                del tool_context.state[key]
-                cleared.append(key)
+                try:
+                    # State doesn't support .pop(), use del
+                    del tool_context.state[key]
+                    cleared.append(key)
+                except Exception as e:
+                    logger.warning(f"CLEAR_STATE: Could not clear {key}: {e}")
         
-        # Reset counters (can't delete temp: keys, just set to 0)
+        # Reset counters
         tool_context.state['temp:images_generated_count'] = 0
         cleared.append('temp:images_generated_count (reset)')
         
-        logger.info(f"✓ Cleared {len(cleared)} state keys for next post")
+        # CRITICAL: Signal loop to exit since we're done with this post
+        # In single-post mode, after one post is done, we should exit
+        tool_context.actions.escalate = True
+        
+        logger.info(f"CLEAR_STATE: ✓ Cleared {len(cleared)} keys and signaled loop exit")
         
         return {
             "status": "cleared",
-            "keys_cleared": cleared
+            "keys_cleared": cleared,
+            "loop_terminated": True
         }
         
     except Exception as e:
-        logger.error(f"Error clearing state: {e}")
+        logger.error(f"CLEAR_STATE: Error: {e}", exc_info=True)
+        # Still try to escalate even if clearing failed
+        tool_context.actions.escalate = True
         return {
             "status": "error",
             "error": str(e)

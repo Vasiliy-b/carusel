@@ -39,10 +39,11 @@ function setupStyleEditor() {
     saveBtn.addEventListener('click', async () => {
         const newStyle = styleInput.value.trim();
         
-        if (!newStyle) {
-            showError('Style cannot be empty');
-            return;
-        }
+        // Allow empty style (for when using style reference images)
+        // if (!newStyle) {
+        //     showError('Style cannot be empty');
+        //     return;
+        // }
         
         try {
             const response = await fetch('/update-style', {
@@ -66,9 +67,10 @@ function setupStyleEditor() {
         }
     });
     
-    // Reset to default
+    // Reset to default (empty)
     resetBtn.addEventListener('click', () => {
-        styleInput.value = 'pastel colors, soft lighting, elegant, clean style, 3d render, high detail, 3d plasticine';
+        styleInput.value = '';
+        showSuccess('Style reset to empty (allows style references to work properly)');
     });
 }
 
@@ -77,7 +79,12 @@ function showSuccess(message) {
     const successBar = document.createElement('div');
     successBar.className = 'success-bar';
     successBar.innerHTML = `<span>${message}</span>`;
-    document.querySelector('.container').insertBefore(successBar, document.querySelector('.controls-section'));
+    
+    // Insert at the beginning of main container
+    const container = document.querySelector('main.container');
+    if (container) {
+        container.insertBefore(successBar, container.firstChild);
+    }
     
     setTimeout(() => {
         successBar.remove();
@@ -131,8 +138,15 @@ async function generateNewPost() {
         showError(error.message);
         statusBar.classList.add('hidden');
         const generateBtn = document.getElementById('generateBtn');
-        generateBtn.disabled = false;
-        generateBtn.textContent = '+ Generate New Post';
+        const generateTextBtn = document.getElementById('generateTextBtn');
+        if (generateBtn) {
+            generateBtn.disabled = false;
+            generateBtn.textContent = '📊 Generate from Sheet';
+        }
+        if (generateTextBtn) {
+            generateTextBtn.disabled = false;
+            generateTextBtn.textContent = '✨ Generate from Text';
+        }
     }
 }
 
@@ -148,20 +162,20 @@ function pollStatus() {
             if (data.status === 'complete') {
                 clearInterval(pollInterval);
                 
-                // Re-enable button before redirect
+                // Re-enable buttons
                 const generateBtn = document.getElementById('generateBtn');
+                const generateTextBtn = document.getElementById('generateTextBtn');
                 if (generateBtn) {
                     generateBtn.disabled = false;
-                    generateBtn.textContent = '+ Generate New Post';
+                    generateBtn.textContent = '📊 Generate from Sheet';
+                }
+                if (generateTextBtn) {
+                    generateTextBtn.disabled = false;
+                    generateTextBtn.textContent = '✨ Generate from Text';
                 }
                 
-                // Redirect to new post
-                if (data.post_id) {
-                    window.location.href = `/post/${data.post_id}`;
-                } else {
-                    // Reload page to show new post in gallery
-                    window.location.reload();
-                }
+                // Reload page to show new post in gallery
+                window.location.reload();
                 
             } else if (data.status === 'error') {
                 clearInterval(pollInterval);
@@ -169,14 +183,33 @@ function pollStatus() {
                 
                 document.getElementById('statusBar').classList.add('hidden');
                 const generateBtn = document.getElementById('generateBtn');
-                generateBtn.disabled = false;
-                generateBtn.textContent = '+ Generate New Post';
+                const generateTextBtn = document.getElementById('generateTextBtn');
+                if (generateBtn) {
+                    generateBtn.disabled = false;
+                    generateBtn.textContent = '📊 Generate from Sheet';
+                }
+                if (generateTextBtn) {
+                    generateTextBtn.disabled = false;
+                    generateTextBtn.textContent = '✨ Generate from Text';
+                }
             }
             // If status is 'running', continue polling
             
         } catch (error) {
             clearInterval(pollInterval);
-            showError('Failed to check status');
+            showError('Failed to check status: ' + error.message);
+            
+            // Re-enable buttons on error
+            const generateBtn = document.getElementById('generateBtn');
+            const generateTextBtn = document.getElementById('generateTextBtn');
+            if (generateBtn) {
+                generateBtn.disabled = false;
+                generateBtn.textContent = '📊 Generate from Sheet';
+            }
+            if (generateTextBtn) {
+                generateTextBtn.disabled = false;
+                generateTextBtn.textContent = '✨ Generate from Text';
+            }
         }
     }, 2000); // Poll every 2 seconds
 }
@@ -202,4 +235,28 @@ setTimeout(() => {
         errorBar.classList.add('hidden');
     }
 }, 10000);
+
+// Show loader function (for text input modal)
+function showLoader(jobId) {
+    const statusBar = document.getElementById('statusBar');
+    const generateBtn = document.getElementById('generateBtn');
+    const generateTextBtn = document.getElementById('generateTextBtn');
+    
+    // Show loading state
+    statusBar.classList.remove('hidden');
+    document.getElementById('statusText').textContent = 'AI agents are crafting your carousel... This takes 2-3 min. 🤖';
+    
+    // Disable both buttons
+    if (generateBtn) {
+        generateBtn.disabled = true;
+        generateBtn.textContent = 'Generating...';
+    }
+    if (generateTextBtn) {
+        generateTextBtn.disabled = true;
+        generateTextBtn.textContent = 'Generating...';
+    }
+    
+    currentJobId = jobId;
+    pollStatus();
+}
 

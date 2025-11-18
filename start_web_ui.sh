@@ -4,7 +4,8 @@
 cd "$(dirname "$0")"
 
 # Set environment variables
-export STYLE="pastel colors, soft lighting, elegant, clean style, 3d render, high detail, 3d plasticine"
+# STYLE is empty by default - users can set via UI if needed
+export STYLE=""
 
 # Activate virtual environment if exists
 if [ -d ".venv" ]; then

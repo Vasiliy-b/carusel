@@ -3,6 +3,7 @@ Orchestration layer for multi-agent content generation workflow
 """
 from google.adk.agents import SequentialAgent, ParallelAgent, LoopAgent, LlmAgent
 from .agents import (
+    text_input_processor_agent,
     data_collector_agent,
     content_analyzer_agent,
     creative_director_agent,
@@ -10,7 +11,7 @@ from .agents import (
     image_prompt_engineer_agent,
     results_manager_agent
 )
-from .tools import get_next_prompt_for_generation, generate_image_from_prompt, exit_image_loop
+from .tools import get_next_prompt_for_generation, generate_image_from_prompt, exit_image_loop, generate_all_images_parallel
 from .post_selector_tool import select_current_post, clear_post_state
 from .post_saver import save_post_metadata
 from .prompt_formatter import format_image_prompts
@@ -52,57 +53,28 @@ state_cleaner_agent = LlmAgent(
 )
 
 # ============================================
-# IMAGE GENERATOR AGENT (Single instance for LoopAgent)
+# PARALLEL IMAGE GENERATOR AGENT
 # ============================================
-# This agent uses gemini-2.5-flash for REASONING
-# and calls gemini-2.5-flash-image via a TOOL for actual image generation
-single_image_generator = LlmAgent(
-    name="ImageGenerator",
-    model=Config.TEXT_MODEL,  # gemini-2.5-flash for reasoning
+# Generates all 10 images concurrently using async API calls
+parallel_image_generator = LlmAgent(
+    name="ParallelImageGenerator",
+    model=Config.TEXT_MODEL,
     include_contents='none',
     instruction="""
-    CRITICAL: You MUST call tools to actually generate images!
+    You will generate all 10 carousel images in parallel for maximum speed.
     
-    1. CALL get_next_prompt_for_generation (no arguments)
+    CRITICAL: Call generate_all_images_parallel tool (no arguments needed).
     
-    2. If status='complete':
-       CALL exit_image_loop to terminate the loop
-       
-    3. If status='ready':
-       CALL generate_image_from_prompt with prompt_text and image_text
-       Confirm creation
+    This tool:
+    - Reads image_prompts array from state
+    - Reads generation_reference_images from state (if present)
+    - Generates all 10 images concurrently using async API calls
+    - Saves images locally with proper naming
     
-    ALWAYS call tools - don't just describe what to do!
+    Confirm when all images are generated successfully and report the results.
     """,
-    tools=[get_next_prompt_for_generation, generate_image_from_prompt, exit_image_loop],
-    description="Generates one carousel image per iteration, exits when all 10 done",
-    output_key="temp:current_image"
-)
-
-# ============================================
-# IMAGE COLLECTION LOOP
-# ============================================
-# Uses LoopAgent to generate images one at a time (10 iterations)
-# This is ADK's recommended pattern for processing arrays
-image_generation_loop = LoopAgent(
-    name="ImageGenerationLoop",
-    sub_agents=[single_image_generator],
-    max_iterations=Config.CAROUSEL_IMAGE_COUNT,  # Generate 10 images
-    description=f"Generates {Config.CAROUSEL_IMAGE_COUNT} carousel images iteratively using gemini-2.5-flash-image"
-)
-
-
-# ============================================
-# CONTENT ANALYSIS PIPELINE
-# ============================================
-# Sequential: Analyze content, then get creative direction
-content_analysis_pipeline = SequentialAgent(
-    name="ContentAnalysisPipeline",
-    sub_agents=[
-        content_analyzer_agent,
-        creative_director_agent
-    ],
-    description="Analyzes post content and provides creative direction"
+    tools=[generate_all_images_parallel],
+    description="Generates all 10 carousel images in parallel using concurrent API calls"
 )
 
 
@@ -127,68 +99,98 @@ prompt_formatter_agent = LlmAgent(
     description="Auto-fixes prompts to use correct art_style and natural colors"
 )
 
+
 # ============================================
-# CONTENT GENERATION PIPELINE
+# INPUT MODE ROUTER & ROOT AGENT FACTORY
 # ============================================
-# Sequential: Write copy, engineer prompts, then format them
-content_generation_pipeline = SequentialAgent(
-    name="ContentGenerationPipeline",
-    sub_agents=[
-        copywriter_agent,
-        image_prompt_engineer_agent,
-        prompt_formatter_agent  # NEW: Auto-fixes prompts
-    ],
-    description="Generates copy and image prompts, then formats them correctly"
-)
+def create_root_agent_for_mode(input_mode: str):
+    """
+    Create appropriate root agent based on input mode.
+    Uses agent.clone() to create fresh copies that can be reused.
+    
+    Args:
+        input_mode: 'sheet' or 'text'
+    
+    Returns:
+        Configured root coordinator agent
+    """
+    # For text mode, we only process 1 post, so max_iterations=1
+    # For sheet mode, respect BATCH_SIZE config
+    max_iter = 1 if input_mode == 'text' else (Config.BATCH_SIZE if Config.BATCH_SIZE > 0 else 100)
+    
+    # Clone all agents to create fresh instances without parent conflicts
+    # ADK 1.6.1+ supports agent.clone(update={}) for reusing agents across workflows
+    
+    # Create fresh analysis pipeline with cloned agents
+    fresh_analysis_pipeline = SequentialAgent(
+        name="ContentAnalysisPipeline",
+        sub_agents=[
+            content_analyzer_agent.clone(),
+            creative_director_agent.clone()
+        ],
+        description="Analyzes post content and provides creative direction"
+    )
+    
+    # Create fresh generation pipeline with cloned agents
+    fresh_generation_pipeline = SequentialAgent(
+        name="ContentGenerationPipeline",
+        sub_agents=[
+            copywriter_agent.clone(),
+            image_prompt_engineer_agent.clone(),
+            prompt_formatter_agent.clone()
+        ],
+        description="Generates copy and image prompts, then formats them correctly"
+    )
+    
+    # Create fresh post processing pipeline with cloned agents
+    fresh_post_pipeline = SequentialAgent(
+        name="PostProcessingPipeline",
+        sub_agents=[
+            post_selector_agent.clone(),
+            fresh_analysis_pipeline,
+            fresh_generation_pipeline,
+            parallel_image_generator.clone(),
+            results_manager_agent.clone(),
+            state_cleaner_agent.clone()
+        ],
+        description="Waterfall pipeline: select→analyze→generate→save→clean"
+    )
+    
+    # Create fresh batch processor with mode-specific iterations
+    batch_processor = LoopAgent(
+        name="BatchProcessor",
+        sub_agents=[fresh_post_pipeline],
+        max_iterations=max_iter,
+        description=f"Processes {max_iter} post(s)"
+    )
+    
+    if input_mode == 'text':
+        # Text input mode
+        return SequentialAgent(
+            name="TextModeCoordinator",
+            sub_agents=[
+                text_input_processor_agent.clone(),
+                batch_processor
+            ],
+            description="Root coordinator for text input mode"
+        )
+    else:
+        # Sheet mode
+        return SequentialAgent(
+            name="SheetModeCoordinator",
+            sub_agents=[
+                data_collector_agent.clone(),
+                batch_processor
+            ],
+            description="Root coordinator for sheet input mode"
+        )
 
 
 # ============================================
-# PER-POST PROCESSING PIPELINE
+# ROOT AGENT - Export factory function
 # ============================================
-# Complete pipeline for processing ONE post
-# Wrapped in Sequential to ensure proper order
-post_processing_pipeline = SequentialAgent(
-    name="PostProcessingPipeline",
-    sub_agents=[
-        post_selector_agent,            # SELECT current post from array
-        content_analysis_pipeline,       # Analyze current post
-        content_generation_pipeline,     # Create copy & prompts
-        image_generation_loop,           # Generate 10 images
-        results_manager_agent,          # Upload & save
-        state_cleaner_agent             # Clear state for next post
-    ],
-    description="Waterfall pipeline: select→analyze→generate→save→clean (one post per iteration)"
-)
-
-
-# ============================================
-# BATCH PROCESSOR
-# ============================================
-# Loop through filtered posts (limited by BATCH_SIZE)
-batch_processor = LoopAgent(
-    name="BatchProcessor",
-    sub_agents=[post_processing_pipeline],
-    max_iterations=Config.BATCH_SIZE if Config.BATCH_SIZE > 0 else 100,
-    description=f"Processes top {Config.BATCH_SIZE if Config.BATCH_SIZE > 0 else 'all'} highest-engagement posts"
-)
-
-
-# ============================================
-# ROOT COORDINATOR
-# ============================================
-# Top-level agent that orchestrates entire workflow
-root_coordinator = SequentialAgent(
-    name="ContentGeneratorCoordinator",
-    sub_agents=[
-        data_collector_agent,  # Fetch and filter posts
-        batch_processor        # Process each post
-    ],
-    description="Root coordinator for multi-agent content generation system"
-)
-
-
-# Export root agent
-root_agent = root_coordinator
+# Export the factory function for dynamic creation
+# Don't create instances at module level to avoid parent conflicts
 
 
 # ============================================

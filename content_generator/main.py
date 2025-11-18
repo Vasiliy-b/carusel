@@ -3,6 +3,7 @@ Main application entry point for Multi-Agent Content Generator
 """
 import asyncio
 import logging
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -12,19 +13,33 @@ from google.adk.sessions import InMemorySessionService
 from google.genai.types import Content, Part
 
 from .config import Config
-from .orchestrator import root_agent
 
 # Setup logging
 log_dir = Path("logs")
 log_dir.mkdir(exist_ok=True)
 
+# Create handlers
+handlers = [logging.StreamHandler(sys.stdout)]
+
+if Config.LOG_FILE:
+    # Ensure log file path is absolute
+    log_file_path = Path(Config.LOG_FILE)
+    if not log_file_path.is_absolute():
+        log_file_path = Path(__file__).parent.parent / Config.LOG_FILE
+    
+    # Create parent directory if needed
+    log_file_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Add file handler with explicit encoding and no buffering
+    file_handler = logging.FileHandler(log_file_path, encoding='utf-8')
+    file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+    handlers.append(file_handler)
+
 logging.basicConfig(
     level=getattr(logging, Config.LOG_LEVEL),
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler(Config.LOG_FILE) if Config.LOG_FILE else logging.StreamHandler(),
-        logging.StreamHandler(sys.stdout)
-    ]
+    handlers=handlers,
+    force=True  # Override any existing config
 )
 
 logger = logging.getLogger(__name__)
@@ -35,20 +50,51 @@ async def run_content_generator():
     Main execution function for content generation workflow
     """
     try:
+        # Check input mode from environment
+        input_mode = os.getenv('INPUT_MODE', 'sheet')
+        user_text = os.getenv('USER_TEXT_INPUT', '')
+        
         logger.info("="*70)
         logger.info("MULTI-AGENT CONTENT GENERATOR STARTED")
         logger.info("="*70)
         logger.info(f"Configuration:")
+        logger.info(f"  - Input Mode: {input_mode.upper()}")
         logger.info(f"  - Text Model: {Config.TEXT_MODEL}")
         logger.info(f"  - Image Model: {Config.IMAGE_MODEL}")
         logger.info(f"  - GCS Bucket: {Config.GCS_BUCKET}")
-        logger.info(f"  - Source Sheet: {Config.SHEETS_ID}/{Config.SOURCE_SHEET_NAME}")
-        logger.info(f"  - Filters: VIRALITY={Config.VIRALITY_FILTER}, ENGAGEMENT={Config.ENGAGEMENT_FILTER}")
+        if input_mode == 'sheet':
+            logger.info(f"  - Source Sheet: {Config.SHEETS_ID}/{Config.SOURCE_SHEET_NAME}")
+            logger.info(f"  - Filters: VIRALITY={Config.VIRALITY_FILTER}, ENGAGEMENT={Config.ENGAGEMENT_FILTER}")
+        else:
+            logger.info(f"  - Text Input: {len(user_text)} characters")
         logger.info("="*70)
+        
+        # Load reference images if provided
+        reference_images = {}
+        if os.getenv('REFERENCE_STYLE_IMAGE'):
+            try:
+                with open(os.getenv('REFERENCE_STYLE_IMAGE'), 'rb') as f:
+                    reference_images['style'] = f.read()
+                logger.info(f"  - Style reference image loaded")
+            except Exception as e:
+                logger.warning(f"Could not load style reference image: {e}")
+        
+        if os.getenv('REFERENCE_PERSONA_IMAGE'):
+            try:
+                with open(os.getenv('REFERENCE_PERSONA_IMAGE'), 'rb') as f:
+                    reference_images['persona'] = f.read()
+                logger.info(f"  - Persona reference image loaded")
+            except Exception as e:
+                logger.warning(f"Could not load persona reference image: {e}")
         
         # Initialize session service
         session_service = InMemorySessionService()
         logger.info("Session service initialized")
+        
+        # Get appropriate root agent for mode
+        from .orchestrator import create_root_agent_for_mode
+        root_agent = create_root_agent_for_mode(input_mode)
+        logger.info(f"Root agent created for {input_mode} mode")
         
         # Create runner with root agent
         runner = Runner(
@@ -70,9 +116,19 @@ async def run_content_generator():
         )
         logger.info(f"Session created: {session_id}")
         
+        # Create initial message based on mode
+        if input_mode == 'text':
+            message_text = f"Process this content idea: {user_text}"
+            logger.info(f"Text mode: Input passed via environment variable USER_TEXT_INPUT")
+            if reference_images:
+                logger.info(f"Text mode: {len(reference_images)} reference image(s) will be loaded from env vars")
+        else:
+            message_text = "Process all qualifying Instagram posts and generate carousel content"
+            logger.info("Sheet mode: Will fetch posts from Google Sheets")
+        
         # Initial message to trigger workflow
         user_message = Content(
-            parts=[Part(text="Process all qualifying Instagram posts and generate carousel content")],
+            parts=[Part(text=message_text)],
             role="user"
         )
         

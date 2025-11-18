@@ -5,12 +5,18 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{ post.title }} - Content Generator</title>
     <link rel="stylesheet" href="/static/style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 </head>
 <body>
     <header>
-        <div class="container">
+        <div class="container" style="flex-wrap: wrap;">
             <a href="/" class="back-btn">← Back to Gallery</a>
-            <h1>{{ post.title }}</h1>
+            <h1 style="flex: 1; min-width: 200px;">{{ post.title }}</h1>
+            <a href="/download/{{ post.post_id }}" class="btn-primary">
+                <span>📥 Download Package</span>
+            </a>
         </div>
     </header>
 
@@ -110,7 +116,12 @@
                     </div>
                     
                     <div class="action-buttons">
-                        <a href="/download/{{ post.post_id }}" class="btn-secondary">Download All Images</a>
+                        <a href="/download/{{ post.post_id }}" class="btn-primary">
+                            📥 Download Carousel Package
+                        </a>
+                        <small style="display: block; margin-top: 8px; color: #666;">
+                            Includes all 10 images + post_content.txt with title, caption, hashtags, and slide texts
+                        </small>
                     </div>
                 </div>
             </div>

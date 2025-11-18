@@ -8,9 +8,27 @@ from .tools import (
     upload_to_gcs,
     update_sheet_metadata,
     overlay_text_on_image,
-    batch_upload_images
+    batch_upload_images,
+    process_text_input
 )
 from .post_saver import save_post_metadata
+
+
+# ============================================
+# 0. TEXT INPUT PROCESSOR AGENT
+# ============================================
+text_input_processor_agent = LlmAgent(
+    name="TextInputProcessor",
+    model=Config.TEXT_MODEL,
+    include_contents='none',
+    instruction="""
+    Call process_text_input tool to convert user's free-form text into structured post data.
+    This will read user_text_input from state and create a post compatible with the pipeline.
+    Confirm the post was created successfully.
+    """,
+    description="Processes free-form text input into structured post format",
+    tools=[process_text_input]
+)
 
 
 # ============================================
@@ -41,19 +59,24 @@ content_analyzer_agent = LlmAgent(
     instruction="""
     You are a content analysis expert specializing in viral social media content.
     
-    Analyze this specific post: {current_post}
+    Analyze this content:
+    
+    {post_content_text}
     
     Extract ONLY:
-    1. Topic (1-3 words)
-    2. Tone (1-2 words: romantic, educational, humorous, etc.)
+    1. Topic (1-3 words) - MUST include specific characters/subjects if mentioned
+    2. Tone (1-2 words: romantic, educational, humorous, action, dramatic, etc.)
     3. Is it narrative or list-based?
     
     Output simple JSON:
     {
-        "topic": "romance/astrology/motivation/etc",
-        "tone": "romantic/educational/funny",
+        "topic": "specific topic/characters from content",
+        "tone": "tone that matches the content",
         "is_story": true/false
     }
+    
+    Example: If content mentions "Cheburashka and Gena the Crocodile in a heist", 
+    topic should be "Cheburashka heist" NOT just "action"!
     """,
     description="Brief content analysis (topic, tone, story type)",
     output_key="content_analysis"  # Regular key - persists in loop
@@ -72,8 +95,13 @@ creative_director_agent = LlmAgent(
     creating viral Instagram carousels.
     
     Based on this analysis: {content_analysis}
+    And the actual content: {post_content_text}
     
-    Make strategic creative decisions.
+    IMPORTANT - Style Reference Status: {has_style_reference}
+    - If has_style_reference is True: DO NOT define art_style or colors - they will come from the uploaded reference image
+    - If has_style_reference is False: Define art_style and colors as usual
+    
+    Make strategic creative decisions that LEVERAGE the specific story elements and characters.
     
     Decide and document:
     
@@ -88,13 +116,23 @@ creative_director_agent = LlmAgent(
           - Example: "10 zodiac signs in love", "Types of...", "Best practices for..."
           - Maintains: Visual style consistency, but each slide complete on its own
     
-    2. **ART STYLE**: Photography/digital art/illustration (pick ONE)
-    3. **COLORS**: 2-3 hex codes
+    2. **ART STYLE**: Photography/digital art/illustration (pick ONE) - SKIP if style reference image present
+    3. **COLORS**: 2-3 hex codes - SKIP if style reference image present  
     4. **TEXT PLACEMENT**: Top/center/bottom
     
-    7. **REASONING**: One sentence explaining your choices
+    5. **REASONING**: One sentence explaining your choices
     
     Output CONCISE creative brief (MAX 500 tokens):
+    
+    IF style reference image present:
+    {
+        "carousel_style": "narrative" or "independent",
+        "has_style_reference": true,
+        "text_placement": "top/center/bottom",
+        "reasoning": "1 sentence"
+    }
+    
+    IF NO style reference:
     {
         "carousel_style": "narrative" or "independent",
         "art_style": "brief description",
@@ -121,8 +159,12 @@ copywriter_agent = LlmAgent(
     You are an expert social media copywriter specializing in high-engagement Instagram content.
     
     Based on:
+    - Original content: {post_content_text}
     - Analysis: {content_analysis}
     - Creative direction: {creative_brief}
+    
+    CRITICAL: If the content mentions specific characters, names, or unique elements (like "Cheburashka", "Gena", etc.),
+    you MUST incorporate them into your copy! Don't be generic!
     
     Generate (be BRIEF!):
     
@@ -162,19 +204,25 @@ image_prompt_engineer_agent = LlmAgent(
     instruction="""
     CRITICAL: Output ONLY the JSON array. NO explanations, NO text before or after!
     
-    Read creative_brief and copy_content from session state.
+    You have access to:
+    - Original content: {post_content_text}
+    - Analysis: {content_analysis}
+    - Creative brief: {creative_brief}
+    - Copy: {copy_content}
     
-    MANDATORY: 
-    - creative_brief is ALREADY in state (do NOT assume or make up your own!)
-    - copy_content is ALREADY in state
+    MANDATORY - CHARACTER INCLUSION:
+    If the original content mentions specific characters, names, or subjects,
+    you MUST include them visually in the image prompts! Don't make generic scenes!
     
-    Read them and use them!
+    CRITICAL - STYLE REFERENCE STATUS: {has_style_reference}
+    - If has_style_reference is True: DO NOT specify art_style or colors in your prompts! The reference image will provide the style.
+    - If has_style_reference is False: Use the art_style and colors from creative_brief as normal.
     
     CRITICAL REQUIREMENTS - ALL 10 slides MUST have:
     1. SAME font family across all 10 prompts
     2. SAME text size ("large" keyword)
     3. SAME text position ("centered prominently")
-    4. USE the exact art_style from creative_brief in EVERY prompt
+    4. IF NO style reference: USE the exact art_style from creative_brief in EVERY prompt
     5. Each prompt ~100 TOKENS with rich emotional detail
     
     STEP 1: Parse creative_brief JSON and extract:
@@ -198,6 +246,16 @@ image_prompt_engineer_agent = LlmAgent(
     STEP 3: For EACH of 10 image_texts, create a RICH 80-100 token prompt:
     
     MANDATORY STRUCTURE:
+    
+    IF creative_brief has "has_style_reference": true:
+    - START WITH: "In the style of the reference image provided, "
+    - Then: "large [your chosen font] text '[IMAGE_TEXT]' centered prominently with [text effects],"
+    - Then: "[detailed scene description with characters and action],"
+    - Then: "flowing [composition movement/energy],"
+    - Then: "[emotional atmosphere], [lighting], [mood], 4K quality"
+    - DO NOT specify specific art style or colors - reference image controls that!
+    
+    IF NO style reference (normal mode):
     - FIRST WORDS: "Create [EXACT art_style from creative_brief]," ← COPY VERBATIM!
     - Then: "large [your chosen font] text '[IMAGE_TEXT]' centered prominently in [natural color name] with [text effects],"
     - Then: "[detailed scene with emotional elements and symbolic objects],"
@@ -237,10 +295,12 @@ image_prompt_engineer_agent = LlmAgent(
     NOTE: Examples above show NATURAL color names ("soft blush pink", "warm lavender") NOT hex codes!
     
     CRITICAL RULES (VIOLATIONS WILL BREAK IMAGE GENERATION):
-    1. COPY art_style VERBATIM from creative_brief - do NOT paraphrase!
+    1. IF NO style reference: COPY art_style VERBATIM from creative_brief - do NOT paraphrase!
        Example: If creative_brief says "Vintage-inspired photography with soft focus and film grain"
        YOU MUST write: "Create Vintage-inspired photography with soft focus and film grain, large..."
        NOT: "Create vintage dreamscape watercolor..." ← WRONG!
+       
+       IF style reference present: SKIP "Create [art_style]" entirely! Just describe the scene!
     
     2. CONVERT hex codes to natural language before using in prompts!
        Example: ["#D6AE8D", "#8C5E58", "#F0EAD6"]
@@ -252,6 +312,11 @@ image_prompt_engineer_agent = LlmAgent(
     4. SAME font + "large" + "centered prominently" in ALL 10 prompts
     
     5. Capture the SOUL and emotional essence of each slide!
+    
+    REFERENCE IMAGES (if present in state):
+    - If generation_reference_images contains 'style': Add "maintaining the visual style and aesthetic from the reference" to each prompt
+    - If generation_reference_images contains 'persona': Add "featuring the person from the reference photo" to relevant prompts
+    - Reference images will be automatically added to API calls by the generation tool
     
     Output format - ONLY the JSON array, NO OTHER TEXT:
     
@@ -328,6 +393,7 @@ results_manager_agent = LlmAgent(
 
 # Export all agents
 __all__ = [
+    'text_input_processor_agent',
     'data_collector_agent',
     'content_analyzer_agent',
     'creative_director_agent',

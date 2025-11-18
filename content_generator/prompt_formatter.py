@@ -155,11 +155,32 @@ def format_image_prompts(tool_context: ToolContext) -> Dict[str, Any]:
                 logger.error(f"Failed to parse image_prompts: {e}")
                 return {"status": "error", "error": f"Invalid image_prompts JSON: {e}"}
         
+        # Check if style reference is being used
+        has_style_reference = creative_brief.get('has_style_reference', False)
+        
+        if has_style_reference:
+            # Style reference mode: Don't enforce art_style/colors, just pass through
+            logger.info("Style reference detected - skipping art_style enforcement")
+            
+            # Just store prompts as-is (they were written for reference image)
+            tool_context.state['image_prompts'] = json.dumps(image_prompts)
+            
+            logger.info(f"✅ Passed through {len(image_prompts)} prompts for style reference mode")
+            logger.info(f"   Style will be controlled by uploaded reference image")
+            
+            return {
+                "status": "success",
+                "prompts_fixed": len(image_prompts),
+                "mode": "style_reference",
+                "art_style_applied": "N/A - using reference image"
+            }
+        
+        # Normal mode: Enforce art_style and convert colors
         art_style = creative_brief.get('art_style', '')
         colors = creative_brief.get('colors', [])
         
         if not art_style:
-            logger.warning("No art_style in creative_brief")
+            logger.warning("No art_style in creative_brief and no style reference")
             return {"status": "error", "error": "No art_style in creative_brief"}
         
         # Convert hex codes to natural language

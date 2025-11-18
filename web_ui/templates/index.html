@@ -3,23 +3,31 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Content Generator - Post Gallery</title>
+    <title>Multi-Agent Content Generator</title>
     <link rel="stylesheet" href="/static/style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 </head>
 <body>
     <header>
         <div class="container">
-            <h1>Multi-Agent Content Generator</h1>
-            <button id="generateBtn" class="btn-primary" {% if active_job_id %}disabled{% endif %}>
-                {% if active_job_id %}Generating...{% else %}+ Generate New Post{% endif %}
-            </button>
+            <h1>🎨 Multi-Agent Content Generator</h1>
+            <div>
+                <button id="generateBtn" class="btn-primary" {% if active_job_id %}disabled{% endif %}>
+                    <span>{% if active_job_id %}⏳ Generating...{% else %}📊 Generate from Sheet{% endif %}</span>
+                </button>
+                <button id="generateTextBtn" class="btn-primary" {% if active_job_id %}disabled{% endif %}>
+                    <span>✨ Generate from Text</span>
+                </button>
+            </div>
         </div>
     </header>
 
     <main class="container">
         <div id="statusBar" class="status-bar {% if not active_job_id %}hidden{% endif %}">
             <div class="spinner"></div>
-            <span id="statusText">AI agents are arguing about your carousel... This takes 2-3 min. They're perfectionists. 🤖</span>
+            <span id="statusText">🤖 AI agents are crafting your perfect carousel... This takes 2-3 minutes. They're perfectionists!</span>
         </div>
         
         <script>
@@ -41,21 +49,16 @@
         </div>
 
         <div class="controls-section">
-            <div class="gallery-header">
-                <h2>Generated Posts</h2>
-                <p class="subtitle">{{ posts|length }} posts generated</p>
-            </div>
-            
             <div class="style-editor">
-                <button id="toggleStyleBtn" class="btn-secondary-sm">⚙️ Image Style</button>
+                <button id="toggleStyleBtn" class="btn-secondary-sm">⚙️ Customize Image Style</button>
                 <div id="stylePanel" class="style-panel hidden">
-                    <label for="styleInput">Current Style (appended to every image prompt):</label>
-                    <textarea id="styleInput" rows="3">{{ current_style }}</textarea>
+                    <label for="styleInput">🎨 Global Style Settings</label>
+                    <textarea id="styleInput" rows="3" placeholder="Example: 'pastel colors, soft lighting, elegant, clean style, 3d render, high detail, 3d plasticine'">{{ current_style }}</textarea>
                     <div class="style-actions">
-                        <button id="saveStyleBtn" class="btn-primary-sm">Save Style</button>
-                        <button id="resetStyleBtn" class="btn-secondary-sm">Reset to Default</button>
+                        <button id="saveStyleBtn" class="btn-primary-sm">💾 Save</button>
+                        <button id="resetStyleBtn" class="btn-secondary-sm">🔄 Reset</button>
                     </div>
-                    <p class="style-note">Changes apply to next generation only</p>
+                    <p class="style-note">💡 Leave empty when using style reference images. Fill in for consistent style across all generations.</p>
                 </div>
             </div>
         </div>
@@ -85,13 +88,102 @@
         </div>
         {% else %}
         <div class="empty-state">
-            <h3>No posts generated yet</h3>
-            <p>Click "Generate New Post" to create your first carousel</p>
+            <h3>🎬 Ready to Create Magic?</h3>
+            <p>Click one of the generate buttons above to create your first AI-powered Instagram carousel!</p>
         </div>
         {% endif %}
     </main>
 
+    <!-- Text Input Modal -->
+    <div id="textInputModal" class="modal">
+        <div class="modal-content">
+            <span class="close">&times;</span>
+            <h2>✨ Generate from Text Input</h2>
+            
+            <form id="textInputForm" enctype="multipart/form-data">
+                <div class="form-group">
+                    <label for="textInput">📝 Describe your content idea</label>
+                    <textarea id="textInput" name="text_input" rows="8" required 
+                              placeholder="Example: A romantic story about two people meeting under the stars, told across 10 emotional moments with soft colors and dreamy atmosphere..."></textarea>
+                </div>
+                
+                <div class="form-group">
+                    <label for="aspectRatio">📐 Image Aspect Ratio</label>
+                    <select id="aspectRatio" name="aspect_ratio" style="width: 100%; padding: 12px; border: 2px solid var(--border-color); border-radius: 10px; font-size: 14px; background: var(--background);">
+                        <option value="1:1">1:1 - Square (1024x1024) - Instagram Standard</option>
+                        <option value="4:5">4:5 - Portrait (896x1152) - Instagram Feed</option>
+                        <option value="9:16">9:16 - Vertical (768x1344) - Stories/Reels</option>
+                        <option value="16:9">16:9 - Landscape (1344x768)</option>
+                        <option value="3:4">3:4 - Portrait (864x1184)</option>
+                        <option value="4:3">4:3 - Landscape (1184x864)</option>
+                    </select>
+                    <small>Choose the aspect ratio for all 10 carousel images</small>
+                </div>
+                
+                <div class="form-group">
+                    <label for="styleImage">🎨 Style Reference (optional)</label>
+                    <input type="file" id="styleImage" name="style_image" accept="image/png,image/jpeg,image/jpg,image/webp">
+                    <small>Upload an image to match its visual style and aesthetic</small>
+                </div>
+                
+                <div class="form-group">
+                    <label for="personaImage">👤 Persona Reference (optional)</label>
+                    <input type="file" id="personaImage" name="persona_image" accept="image/png,image/jpeg,image/jpg,image/webp">
+                    <small>Upload a person's photo to preserve their facial features</small>
+                </div>
+                
+                <button type="submit" class="btn-primary">🚀 Generate Carousel</button>
+            </form>
+        </div>
+    </div>
+
     <script src="/static/app.js"></script>
+    <script>
+    // Modal handling
+    const modal = document.getElementById('textInputModal');
+    const textBtn = document.getElementById('generateTextBtn');
+    const span = document.getElementsByClassName('close')[0];
+
+    textBtn.onclick = function() {
+        modal.style.display = 'block';
+    }
+
+    span.onclick = function() {
+        modal.style.display = 'none';
+    }
+
+    window.onclick = function(event) {
+        if (event.target == modal) {
+            modal.style.display = 'none';
+        }
+    }
+
+    // Form submission
+    document.getElementById('textInputForm').addEventListener('submit', async function(e) {
+        e.preventDefault();
+        
+        const formData = new FormData(this);
+        
+        try {
+            const response = await fetch('/generate_from_text', {
+                method: 'POST',
+                body: formData
+            });
+            
+            const data = await response.json();
+            
+            if (response.ok) {
+                modal.style.display = 'none';
+                // Show loader and start polling
+                showLoader(data.job_id);
+            } else {
+                alert('Error: ' + data.error);
+            }
+        } catch (error) {
+            alert('Error starting generation: ' + error);
+        }
+    });
+    </script>
 </body>
 </html>
 

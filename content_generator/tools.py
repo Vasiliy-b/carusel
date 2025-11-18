@@ -4,6 +4,7 @@ Custom tools for Content Generator
 import asyncio
 import io
 import logging
+import os
 from datetime import datetime
 from typing import Dict, List, Any, Optional
 import requests
@@ -16,6 +17,115 @@ from .config import Config
 logger = logging.getLogger(__name__)
 
 
+def process_text_input(tool_context: ToolContext) -> Dict[str, Any]:
+    """
+    Process free-form text input and structure it like a sheet post.
+    
+    Reads from:
+        - Environment variable USER_TEXT_INPUT (set by web UI)
+        - reference_images from state (if present)
+    
+    Returns:
+        Structured post data compatible with existing pipeline
+    """
+    try:
+        logger.info("="*70)
+        logger.info("TEXT_INPUT: Processing user text input")
+        logger.info("="*70)
+        
+        # Get text input from environment variable (set by web UI)
+        user_text = os.getenv('USER_TEXT_INPUT', '')
+        
+        # Fallback: try to get from state if env var not set
+        if not user_text:
+            user_text = tool_context.state.get('user_text_input', '')
+        
+        if not user_text:
+            logger.error("TEXT_INPUT: No text found in env or state")
+            logger.error(f"TEXT_INPUT: Available env vars: {[k for k in os.environ.keys() if 'TEXT' in k or 'INPUT' in k]}")
+            logger.error(f"TEXT_INPUT: Available state keys: {list(tool_context.state.keys())}")
+            return {
+                "status": "error",
+                "error": "No text input found in environment or state"
+            }
+        
+        logger.info(f"TEXT_INPUT: Successfully retrieved text from environment")
+        
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        post_id = f"post_text_{timestamp}"
+        
+        logger.info(f"TEXT_INPUT: Input length: {len(user_text)} chars")
+        logger.info(f"TEXT_INPUT: Generated post_id: {post_id}")
+        logger.info(f"TEXT_INPUT: Preview: {user_text[:100]}...")
+        
+        # Create structured post data
+        post = {
+            'post_id': post_id,
+            'row_index': -1,  # Indicates text input, not from sheet
+            'rewrited_script': user_text,
+            'original_script': user_text,
+            'url': None,
+            'category': 'Text Input',
+            'theme': 'User Generated',
+            'posted date': datetime.now().isoformat(),
+            'VIRALITY': 'N/A',
+            'ENGAGEMENT': 'N/A'
+        }
+        
+        # Store in state (single post)
+        tool_context.state['filtered_posts'] = [post]
+        tool_context.state['total_posts_found'] = 1
+        tool_context.state['input_mode'] = 'text'
+        tool_context.state['batch_size_override'] = 1  # Force single iteration for text input
+        
+        # Load reference images from environment if present
+        reference_images = {}
+        
+        style_img_path = os.getenv('REFERENCE_STYLE_IMAGE')
+        if style_img_path and os.path.exists(style_img_path):
+            try:
+                with open(style_img_path, 'rb') as f:
+                    reference_images['style'] = f.read()
+                logger.info(f"TEXT_INPUT: Loaded STYLE reference from {style_img_path}")
+            except Exception as e:
+                logger.warning(f"TEXT_INPUT: Failed to load style image: {e}")
+        
+        persona_img_path = os.getenv('REFERENCE_PERSONA_IMAGE')
+        if persona_img_path and os.path.exists(persona_img_path):
+            try:
+                with open(persona_img_path, 'rb') as f:
+                    reference_images['persona'] = f.read()
+                logger.info(f"TEXT_INPUT: Loaded PERSONA reference from {persona_img_path}")
+            except Exception as e:
+                logger.warning(f"TEXT_INPUT: Failed to load persona image: {e}")
+        
+        # Store reference images in generation state if found
+        if reference_images:
+            tool_context.state['generation_reference_images'] = reference_images
+            logger.info(f"TEXT_INPUT: Stored {len(reference_images)} reference image(s) in generation state")
+            for img_type, img_data in reference_images.items():
+                logger.info(f"TEXT_INPUT: {img_type.upper()} - {len(img_data)} bytes")
+        else:
+            logger.info(f"TEXT_INPUT: No reference images provided")
+        
+        logger.info(f"TEXT_INPUT: ✓ Successfully processed as post: {post_id}")
+        logger.info("="*70)
+        
+        return {
+            'status': 'success',
+            'post_id': post_id,
+            'post': post,
+            'summary': f'Created post from text input ({len(user_text)} chars)'
+        }
+        
+    except Exception as e:
+        logger.error(f"Error processing text input: {e}")
+        return {
+            'status': 'error',
+            'error': str(e)
+        }
+
+
 def fetch_google_sheet_data(tool_context: ToolContext) -> Dict[str, Any]:
     """
     Fetch data from public Google Sheet and filter by VIRALITY and ENGAGEMENT criteria.
@@ -24,31 +134,38 @@ def fetch_google_sheet_data(tool_context: ToolContext) -> Dict[str, Any]:
         Dictionary containing filtered posts with metadata
     """
     try:
-        logger.info("Fetching data from Google Sheets...")
+        logger.info("="*70)
+        logger.info("SHEET_FETCH: Fetching data from Google Sheets")
+        logger.info("="*70)
         
         # Construct CSV export URL for INSTAGRAM sheet
         # GID for INSTAGRAM sheet is 904285398 (from the provided URL)
         sheet_url = f"https://docs.google.com/spreadsheets/d/{Config.SHEETS_ID}/export?format=csv&gid=904285398"
         
         # Fetch the sheet data
+        logger.info(f"SHEET_FETCH: URL: {sheet_url}")
         response = requests.get(sheet_url, timeout=30)
         response.raise_for_status()
+        logger.info(f"SHEET_FETCH: HTTP {response.status_code} - {len(response.text)} bytes received")
         
         # Parse CSV
         from io import StringIO
         df = pd.read_csv(StringIO(response.text))
         
-        logger.info(f"Fetched {len(df)} total posts from sheet")
+        logger.info(f"SHEET_FETCH: Parsed {len(df)} total posts from sheet")
+        logger.info(f"SHEET_FETCH: Columns: {list(df.columns)}")
         
         # Filter by VIRALITY column
         if 'VIRALITY' in df.columns:
+            before_count = len(df)
             df = df[df['VIRALITY'].isin(Config.VIRALITY_FILTER)]
-            logger.info(f"After VIRALITY filter: {len(df)} posts")
+            logger.info(f"SHEET_FETCH: VIRALITY filter ({Config.VIRALITY_FILTER}): {before_count} → {len(df)} posts")
         
         # Filter by ENGAGEMENT column
         if 'ENGAGEMENT' in df.columns:
+            before_count = len(df)
             df = df[df['ENGAGEMENT'].isin(Config.ENGAGEMENT_FILTER)]
-            logger.info(f"After ENGAGEMENT filter: {len(df)} posts")
+            logger.info(f"SHEET_FETCH: ENGAGEMENT filter ({Config.ENGAGEMENT_FILTER}): {before_count} → {len(df)} posts")
         
         # Extract relevant columns
         # Based on the sheet structure, we need: rewrited_script, url, posted date, category, etc.
@@ -76,13 +193,16 @@ def fetch_google_sheet_data(tool_context: ToolContext) -> Dict[str, Any]:
         if posts:
             total_qualified = len(posts)
             random_post = random.choice(posts)
+            logger.info(f"SHEET_FETCH: Randomly selecting 1 from {total_qualified} qualified posts...")
+            logger.info(f"SHEET_FETCH: Selected post_id: {random_post.get('post_id', 'N/A')}")
+            logger.info(f"SHEET_FETCH: Category: {random_post.get('category', 'N/A')}")
+            logger.info(f"SHEET_FETCH: Theme: {random_post.get('theme', 'N/A')}")
             posts = [random_post]  # Single random post
-            logger.info(f"Randomly selected 1 post from {total_qualified} qualified posts")
-            logger.info(f"Selected post: {random_post.get('post_id', 'N/A')}")
         else:
-            logger.warning("No posts to select from!")
+            logger.error("SHEET_FETCH: No posts matched the filters!")
         
-        logger.info(f"Successfully filtered {len(posts)} posts for processing")
+        logger.info(f"SHEET_FETCH: ✓ Successfully prepared {len(posts)} post(s) for processing")
+        logger.info("="*70)
         
         # Store in state for other agents to access
         tool_context.state['filtered_posts'] = posts
@@ -588,6 +708,284 @@ def get_next_prompt_for_generation(tool_context: ToolContext) -> Dict[str, Any]:
         return {
             "status": "error",
             "error": str(e)
+        }
+
+
+async def generate_all_images_parallel(
+    tool_context: ToolContext
+) -> Dict[str, Any]:
+    """
+    Generate all 10 images in parallel using async API calls.
+    
+    Reads from state:
+        - image_prompts: Array of 10 prompt objects with 't' (text) and 'p' (prompt)
+        - generation_reference_images: Optional dict with 'style' and/or 'persona' bytes
+    
+    Returns:
+        Status and saved image paths
+    """
+    try:
+        logger.info("="*70)
+        logger.info("PARALLEL_GEN: Starting parallel image generation...")
+        logger.info("="*70)
+        
+        # Get image prompts from state
+        image_prompts_raw = tool_context.state.get('image_prompts', [])
+        
+        # Parse if it's a string (handle markdown-wrapped JSON)
+        if isinstance(image_prompts_raw, str):
+            from .utils import extract_json_from_text
+            image_prompts = extract_json_from_text(image_prompts_raw)
+            
+            if image_prompts is None:
+                logger.error(f"Could not parse JSON from image_prompts")
+                return {
+                    "status": "error",
+                    "error": "Failed to parse image_prompts JSON from state"
+                }
+        else:
+            image_prompts = image_prompts_raw
+        
+        if not image_prompts or len(image_prompts) == 0:
+            return {
+                "status": "error",
+                "error": "No image prompts found in state"
+            }
+        
+        logger.info(f"Found {len(image_prompts)} prompts for parallel generation")
+        
+        # Get reference images if present
+        reference_images = tool_context.state.get('generation_reference_images', {})
+        if reference_images:
+            logger.info(f"PARALLEL_GEN: Found reference images: {list(reference_images.keys())}")
+            for img_type, img_data in reference_images.items():
+                logger.info(f"PARALLEL_GEN: {img_type} image size: {len(img_data)} bytes")
+        else:
+            logger.info(f"PARALLEL_GEN: No reference images provided")
+        
+        # Import Gemini SDK
+        from google import genai
+        from google.genai import types
+        
+        # Create client
+        client = genai.Client(
+            vertexai=Config.USE_VERTEX_AI,
+            project=Config.PROJECT_ID if Config.USE_VERTEX_AI else None,
+            location=Config.LOCATION if Config.USE_VERTEX_AI else None
+        )
+        
+        async def generate_single_image(idx, prompt_data):
+            """Generate a single image asynchronously"""
+            try:
+                logger.info(f"PARALLEL_GEN: [{idx+1}/10] Starting image generation...")
+                
+                # Build content parts
+                parts = []
+                
+                # Get main prompt first
+                prompt_text = prompt_data.get('p') or prompt_data.get('prompt', '')
+                image_text = prompt_data.get('t') or prompt_data.get('image_text', '')
+                
+                # Build prompt with simple reference instructions
+                prompt_parts = []
+                
+                # Add reference image instructions if present (SIMPLE AND CLEAR)
+                if reference_images:
+                    if 'style' in reference_images:
+                        prompt_parts.append("Use the provided image as a style reference.")
+                    if 'persona' in reference_images:
+                        prompt_parts.append("Use the person from the provided image, preserving their facial features.")
+                
+                # Add main prompt
+                prompt_parts.append(prompt_text)
+                
+                # Add STYLE suffix ONLY if no style reference (avoid conflicts)
+                if Config.STYLE and 'style' not in reference_images:
+                    prompt_parts.append(Config.STYLE)
+                    logger.info(f"PARALLEL_GEN: [{idx+1}/10] Added global STYLE suffix")
+                elif 'style' in reference_images:
+                    logger.info(f"PARALLEL_GEN: [{idx+1}/10] Skipped global STYLE (using reference image)")
+                
+                full_text = " ".join(prompt_parts)
+                
+                # Per Gemini docs: text first, then images
+                parts.append(types.Part(text=full_text))
+                
+                # Add reference images after text
+                if reference_images:
+                    logger.info(f"PARALLEL_GEN: [{idx+1}/10] Adding {len(reference_images)} reference image(s)")
+                    if 'style' in reference_images:
+                        parts.append(types.Part(
+                            inline_data=types.Blob(
+                                mime_type='image/png',
+                                data=reference_images['style']
+                            )
+                        ))
+                        logger.info(f"PARALLEL_GEN: [{idx+1}/10] Added STYLE reference")
+                    
+                    if 'persona' in reference_images:
+                        parts.append(types.Part(
+                            inline_data=types.Blob(
+                                mime_type='image/png',
+                                data=reference_images['persona']
+                            )
+                        ))
+                        logger.info(f"PARALLEL_GEN: [{idx+1}/10] Added PERSONA reference")
+                
+                logger.info(f"PARALLEL_GEN: [{idx + 1}/10] Text: '{image_text}'")
+                logger.info(f"PARALLEL_GEN: [{idx + 1}/10] Prompt length: {len(full_text)} chars")
+                logger.info(f"PARALLEL_GEN: [{idx + 1}/10] Total parts: {len(parts)}")
+                if reference_images:
+                    logger.info(f"PARALLEL_GEN: [{idx + 1}/10] Reference types: {list(reference_images.keys())}")
+                
+                # Generate image (run in thread to avoid blocking)
+                logger.info(f"PARALLEL_GEN: [{idx + 1}/10] Calling {Config.IMAGE_MODEL} API...")
+                logger.info(f"PARALLEL_GEN: [{idx + 1}/10] Aspect ratio: {Config.IMAGE_ASPECT_RATIO}")
+                start_time = asyncio.get_event_loop().time()
+                
+                # Set generation config with safety filters disabled
+                # For gemini-2.5-flash-image, use BLOCK_NONE to disable automated blocking
+                gen_config = types.GenerateContentConfig(
+                    temperature=1.0,
+                    top_p=0.95,
+                    max_output_tokens=32768,
+                    response_modalities=['Image'],  # Prevent text output from image model
+                    safety_settings=[
+                        types.SafetySetting(
+                            category="HARM_CATEGORY_HATE_SPEECH",
+                            threshold="BLOCK_NONE"
+                        ),
+                        types.SafetySetting(
+                            category="HARM_CATEGORY_DANGEROUS_CONTENT",
+                            threshold="BLOCK_NONE"
+                        ),
+                        types.SafetySetting(
+                            category="HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                            threshold="BLOCK_NONE"
+                        ),
+                        types.SafetySetting(
+                            category="HARM_CATEGORY_HARASSMENT",
+                            threshold="BLOCK_NONE"
+                        )
+                    ],
+                    image_config=types.ImageConfig(
+                        aspect_ratio=Config.IMAGE_ASPECT_RATIO
+                    )
+                )
+                
+                response = await asyncio.to_thread(
+                    client.models.generate_content,
+                    model=Config.IMAGE_MODEL,
+                    contents=parts,
+                    config=gen_config
+                )
+                
+                elapsed = asyncio.get_event_loop().time() - start_time
+                logger.info(f"PARALLEL_GEN: [{idx + 1}/10] API call completed in {elapsed:.2f}s")
+                
+                # Extract and save image with better error handling
+                if not response.candidates or len(response.candidates) == 0:
+                    logger.error(f"PARALLEL_GEN: [{idx + 1}/10] No candidates in response")
+                    logger.error(f"PARALLEL_GEN: [{idx + 1}/10] Response: {response}")
+                    return {'index': idx, 'status': 'error', 'error': 'No candidates - possibly safety filter'}
+                
+                candidate = response.candidates[0]
+                
+                # Log finish reason if not normal
+                if hasattr(candidate, 'finish_reason') and candidate.finish_reason:
+                    logger.info(f"PARALLEL_GEN: [{idx + 1}/10] Finish reason: {candidate.finish_reason}")
+                
+                if not candidate.content or not candidate.content.parts:
+                    logger.error(f"PARALLEL_GEN: [{idx + 1}/10] No content.parts in response")
+                    if hasattr(candidate, 'finish_reason'):
+                        logger.error(f"PARALLEL_GEN: [{idx + 1}/10] Finish reason: {candidate.finish_reason}")
+                    if hasattr(candidate, 'safety_ratings'):
+                        logger.error(f"PARALLEL_GEN: [{idx + 1}/10] Safety ratings: {candidate.safety_ratings}")
+                    return {'index': idx, 'status': 'error', 'error': f'No content.parts - finish_reason: {getattr(candidate, "finish_reason", "unknown")}'}
+                
+                for part in candidate.content.parts:
+                    if part.inline_data:
+                        image_bytes = part.inline_data.data
+                        logger.info(f"PARALLEL_GEN: [{idx + 1}/10] Received image ({len(image_bytes)} bytes)")
+                        
+                        # Save locally
+                        from .local_saver import save_image_local
+                        current_post = tool_context.state.get('current_post', {})
+                        post_id = current_post.get('post_id', 'unknown_post') if isinstance(current_post, dict) else 'unknown_post'
+                        
+                        saved_path = save_image_local(
+                            post_id=post_id,
+                            image_number=idx,
+                            image_bytes=image_bytes,
+                            image_text=image_text
+                        )
+                        
+                        logger.info(f"PARALLEL_GEN: ✓ [{idx + 1}/10] Saved: {saved_path}")
+                        
+                        return {
+                            'index': idx,
+                            'status': 'success',
+                            'path': saved_path,
+                            'size': len(image_bytes),
+                            'text': image_text
+                        }
+                
+                return {'index': idx, 'status': 'error', 'error': 'No image data in response'}
+            
+            except Exception as e:
+                logger.error(f"Error generating image {idx + 1}: {e}")
+                return {'index': idx, 'status': 'error', 'error': str(e)}
+        
+        # Generate all images in parallel with timeout
+        logger.info(f"PARALLEL_GEN: Launching {len(image_prompts)} concurrent tasks...")
+        start_time = asyncio.get_event_loop().time()
+        
+        tasks = [generate_single_image(i, image_prompts[i]) for i in range(len(image_prompts))]
+        
+        # Add timeout to prevent infinite hangs (3 minutes max per batch)
+        try:
+            results = await asyncio.wait_for(
+                asyncio.gather(*tasks, return_exceptions=True),
+                timeout=180.0  # 3 minutes timeout
+            )
+        except asyncio.TimeoutError:
+            logger.error("PARALLEL_GEN: Timeout after 180 seconds!")
+            return {
+                'status': 'error',
+                'error': 'Image generation timed out after 3 minutes',
+                'total': len(image_prompts),
+                'successful': 0
+            }
+        
+        elapsed = asyncio.get_event_loop().time() - start_time
+        logger.info(f"PARALLEL_GEN: All tasks completed in {elapsed:.2f}s (avg {elapsed/len(image_prompts):.2f}s per image)")
+        
+        # Process results
+        successful = [r for r in results if isinstance(r, dict) and r.get('status') == 'success']
+        failed = [r for r in results if isinstance(r, dict) and r.get('status') == 'error']
+        
+        logger.info(f"PARALLEL_GEN: Results - {len(successful)}/{len(image_prompts)} successful, {len(failed)} failed")
+        
+        if failed:
+            logger.warning(f"PARALLEL_GEN: {len(failed)} images failed:")
+            for fail in failed:
+                logger.error(f"PARALLEL_GEN: ✗ Image {fail.get('index', '?')+1}: {fail.get('error', 'Unknown error')}")
+        
+        return {
+            'status': 'success' if len(successful) == len(image_prompts) else 'partial',
+            'total': len(image_prompts),
+            'successful': len(successful),
+            'failed': len(failed),
+            'results': results
+        }
+    
+    except Exception as e:
+        logger.error(f"Error in parallel image generation: {e}")
+        return {
+            'status': 'error',
+            'error': str(e),
+            'total': 0,
+            'successful': 0
         }
 
 
