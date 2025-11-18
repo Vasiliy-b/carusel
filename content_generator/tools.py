@@ -843,29 +843,28 @@ async def generate_all_images_parallel(
                 logger.info(f"PARALLEL_GEN: [{idx + 1}/10] Aspect ratio: {Config.IMAGE_ASPECT_RATIO}")
                 start_time = asyncio.get_event_loop().time()
                 
-                # Set generation config with safety filters disabled
-                # For gemini-2.5-flash-image, use BLOCK_NONE to disable automated blocking
+                # Match official Model Garden config EXACTLY (except IMAGE-only modality)
                 gen_config = types.GenerateContentConfig(
-                    temperature=1.0,
+                    temperature=1,
                     top_p=0.95,
                     max_output_tokens=32768,
-                    response_modalities=['Image'],  # Prevent text output from image model
+                    response_modalities=["IMAGE"],  # Force IMAGE-only to prevent NO_IMAGE errors
                     safety_settings=[
                         types.SafetySetting(
                             category="HARM_CATEGORY_HATE_SPEECH",
-                            threshold="BLOCK_NONE"
+                            threshold="OFF"  # OFF per official snippet, not BLOCK_NONE
                         ),
                         types.SafetySetting(
                             category="HARM_CATEGORY_DANGEROUS_CONTENT",
-                            threshold="BLOCK_NONE"
+                            threshold="OFF"
                         ),
                         types.SafetySetting(
                             category="HARM_CATEGORY_SEXUALLY_EXPLICIT",
-                            threshold="BLOCK_NONE"
+                            threshold="OFF"
                         ),
                         types.SafetySetting(
                             category="HARM_CATEGORY_HARASSMENT",
-                            threshold="BLOCK_NONE"
+                            threshold="OFF"
                         )
                     ],
                     image_config=types.ImageConfig(
