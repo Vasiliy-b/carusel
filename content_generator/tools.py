@@ -774,10 +774,15 @@ async def generate_all_images_parallel(
             location=Config.LOCATION if Config.USE_VERTEX_AI else None
         )
         
+        # Create semaphore to limit concurrent API calls
+        semaphore = asyncio.Semaphore(Config.MAX_CONCURRENT_IMAGE_REQUESTS)
+        logger.info(f"PARALLEL_GEN: Using semaphore with max {Config.MAX_CONCURRENT_IMAGE_REQUESTS} concurrent requests")
+        
         async def generate_single_image(idx, prompt_data):
             """Generate a single image asynchronously"""
             try:
                 logger.info(f"PARALLEL_GEN: [{idx+1}/10] Starting image generation...")
+                logger.info(f"PARALLEL_GEN: [{idx+1}/10] Waiting for semaphore slot...")
                 
                 # Build content parts
                 parts = []
@@ -841,7 +846,6 @@ async def generate_all_images_parallel(
                 # Generate image (run in thread to avoid blocking)
                 logger.info(f"PARALLEL_GEN: [{idx + 1}/10] Calling {Config.IMAGE_MODEL} API...")
                 logger.info(f"PARALLEL_GEN: [{idx + 1}/10] Aspect ratio: {Config.IMAGE_ASPECT_RATIO}")
-                start_time = asyncio.get_event_loop().time()
                 
                 # Match official Model Garden config EXACTLY (except IMAGE-only modality)
                 gen_config = types.GenerateContentConfig(
@@ -872,15 +876,20 @@ async def generate_all_images_parallel(
                     )
                 )
                 
-                response = await asyncio.to_thread(
-                    client.models.generate_content,
-                    model=Config.IMAGE_MODEL,
-                    contents=parts,
-                    config=gen_config
-                )
-                
-                elapsed = asyncio.get_event_loop().time() - start_time
-                logger.info(f"PARALLEL_GEN: [{idx + 1}/10] API call completed in {elapsed:.2f}s")
+                # Acquire semaphore before API call to limit concurrency
+                async with semaphore:
+                    logger.info(f"PARALLEL_GEN: [{idx + 1}/10] Acquired semaphore slot, calling API...")
+                    start_time = asyncio.get_event_loop().time()
+                    
+                    response = await asyncio.to_thread(
+                        client.models.generate_content,
+                        model=Config.IMAGE_MODEL,
+                        contents=parts,
+                        config=gen_config
+                    )
+                    
+                    elapsed = asyncio.get_event_loop().time() - start_time
+                    logger.info(f"PARALLEL_GEN: [{idx + 1}/10] API call completed in {elapsed:.2f}s")
                 
                 # Extract and save image with better error handling
                 if not response.candidates or len(response.candidates) == 0:
@@ -941,17 +950,23 @@ async def generate_all_images_parallel(
         
         tasks = [generate_single_image(i, image_prompts[i]) for i in range(len(image_prompts))]
         
-        # Add timeout to prevent infinite hangs (3 minutes max per batch)
+        # Calculate dynamic timeout based on batched execution
+        # With semaphore limiting concurrency, we need time for all batches to complete
+        import math
+        num_batches = math.ceil(len(image_prompts) / Config.MAX_CONCURRENT_IMAGE_REQUESTS)
+        timeout = num_batches * 20 + 30  # 20s per batch + 30s buffer
+        logger.info(f"PARALLEL_GEN: Timeout set to {timeout}s ({num_batches} batches, {Config.MAX_CONCURRENT_IMAGE_REQUESTS} concurrent)")
+        
         try:
             results = await asyncio.wait_for(
                 asyncio.gather(*tasks, return_exceptions=True),
-                timeout=180.0  # 3 minutes timeout
+                timeout=float(timeout)
             )
         except asyncio.TimeoutError:
-            logger.error("PARALLEL_GEN: Timeout after 180 seconds!")
+            logger.error(f"PARALLEL_GEN: Timeout after {timeout} seconds!")
             return {
                 'status': 'error',
-                'error': 'Image generation timed out after 3 minutes',
+                'error': f'Image generation timed out after {timeout} seconds',
                 'total': len(image_prompts),
                 'successful': 0
             }

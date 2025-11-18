@@ -72,6 +72,7 @@ class Config:
     # ============================================
     PARALLEL_IMAGE_GENERATION = os.getenv('PARALLEL_IMAGE_GENERATION', 'TRUE').upper() == 'TRUE'
     MAX_PARALLEL_IMAGES = int(os.getenv('MAX_PARALLEL_IMAGES', '10'))
+    MAX_CONCURRENT_IMAGE_REQUESTS = int(os.getenv('MAX_CONCURRENT_IMAGE_REQUESTS', '3'))
     RETRY_ATTEMPTS = int(os.getenv('RETRY_ATTEMPTS', '3'))
     RETRY_DELAY = int(os.getenv('RETRY_DELAY', '2'))
     
