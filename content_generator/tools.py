@@ -50,8 +50,9 @@ def process_text_input(tool_context: ToolContext) -> Dict[str, Any]:
             }
         
         logger.info(f"TEXT_INPUT: Successfully retrieved text from environment")
-        
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+
+        # Include microseconds for unique post_id in parallel execution
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
         post_id = f"post_text_{timestamp}"
         
         logger.info(f"TEXT_INPUT: Input length: {len(user_text)} chars")
@@ -181,10 +182,10 @@ def fetch_google_sheet_data(tool_context: ToolContext) -> Dict[str, Any]:
         # Convert to list of dictionaries
         posts = filtered_df.to_dict('records')
         
-        # Add row index for reference
+        # Add row index for reference (include microseconds for unique post_id in parallel execution)
         for idx, post in enumerate(posts):
             post['row_index'] = idx
-            post['post_id'] = f"post_{idx}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            post['post_id'] = f"post_{idx}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
         
         logger.info(f"Found {len(posts)} qualifying posts")
         

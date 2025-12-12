@@ -139,9 +139,9 @@ def run_generator_async(job_id):
             logger.info(f"BACKGROUND: Using venv python: {venv_python}")
 
         logger.info(f"BACKGROUND: Running subprocess for sheet mode...")
-        # Run generator with venv python
+        # Run generator with venv python and job_id for session isolation
         result = subprocess.run(
-            [venv_python, '-m', 'content_generator.main'],
+            [venv_python, '-m', 'content_generator.main', '--job-id', job_id],
             cwd=str(BASE_DIR),
             capture_output=True,
             text=True,
@@ -338,8 +338,9 @@ def run_generator_async_text_mode(job_id, user_text, reference_images, aspect_ra
             logger.info(f"BACKGROUND_TEXT: Using venv python: {venv_python}")
 
         logger.info(f"BACKGROUND_TEXT: Running subprocess...")
+        # Run generator with job_id for session isolation
         result = subprocess.run(
-            [venv_python, '-m', 'content_generator.main'],
+            [venv_python, '-m', 'content_generator.main', '--job-id', job_id],
             cwd=str(BASE_DIR),
             capture_output=True,
             text=True,

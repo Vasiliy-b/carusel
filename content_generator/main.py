@@ -1,6 +1,7 @@
 """
 Main application entry point for Multi-Agent Content Generator
 """
+import argparse
 import asyncio
 import logging
 import os
@@ -45,9 +46,12 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-async def run_content_generator():
+async def run_content_generator(job_id: str = None):
     """
     Main execution function for content generation workflow
+
+    Args:
+        job_id: Unique job identifier for multi-session support
     """
     try:
         # Check input mode from environment
@@ -104,8 +108,11 @@ async def run_content_generator():
         )
         logger.info("Runner initialized with root coordinator agent")
         
-        # Create unique session ID
-        session_id = f"{Config.SESSION_ID_PREFIX}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        # Create unique session ID (use job_id if provided for multi-session isolation)
+        if job_id:
+            session_id = f"{Config.SESSION_ID_PREFIX}_{job_id[:8]}"  # Use first 8 chars of UUID
+        else:
+            session_id = f"{Config.SESSION_ID_PREFIX}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"  # Added microseconds
         user_id = "system"
         
         # Create session
@@ -222,13 +229,20 @@ def main():
     """
     CLI entry point
     """
+    # Parse command-line arguments
+    parser = argparse.ArgumentParser(description='Multi-Agent Content Generator')
+    parser.add_argument('--job-id', type=str, help='Unique job ID for multi-session isolation')
+    args = parser.parse_args()
+
     try:
         # Validate configuration
         Config.validate()
         logger.info("Configuration validated successfully")
-        
+        if args.job_id:
+            logger.info(f"Job ID: {args.job_id}")
+
         # Run async workflow
-        result = asyncio.run(run_content_generator())
+        result = asyncio.run(run_content_generator(job_id=args.job_id))
         
         if result['status'] == 'success':
             logger.info("\n✅ Content generation completed successfully!")
