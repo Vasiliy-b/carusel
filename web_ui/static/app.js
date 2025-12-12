@@ -3,19 +3,25 @@
 let currentJobId = null;
 let pollInterval = null;
 
+// Helper to set button text (handles span inside button)
+function setButtonText(btn, text) {
+    if (!btn) return;
+    const span = btn.querySelector('span');
+    if (span) {
+        span.textContent = text;
+    } else {
+        btn.textContent = text;
+    }
+}
+
 // Initialize on page load - check for active jobs
 document.addEventListener('DOMContentLoaded', () => {
     const generateBtn = document.getElementById('generateBtn');
     if (generateBtn) {
         // Add click handler
         generateBtn.addEventListener('click', generateNewPost);
-        
-        // If button is disabled on load, keep it disabled
-        if (generateBtn.disabled) {
-            generateBtn.textContent = 'Generating...';
-        }
     }
-    
+
     // Setup style editor
     setupStyleEditor();
 });
@@ -104,7 +110,7 @@ async function generateNewPost() {
     statusBar.classList.remove('hidden');
     document.getElementById('statusText').textContent = 'AI agents are arguing about your carousel... This takes 2-3 min. They\'re perfectionists. 🤖';
     generateBtn.disabled = true;
-    generateBtn.textContent = 'Generating...';
+    setButtonText(generateBtn, 'Generating...');
     
     try {
         // Trigger generation
@@ -141,11 +147,11 @@ async function generateNewPost() {
         const generateTextBtn = document.getElementById('generateTextBtn');
         if (generateBtn) {
             generateBtn.disabled = false;
-            generateBtn.textContent = '📊 Generate from Sheet';
+            setButtonText(generateBtn, '📊 Generate from Sheet');
         }
         if (generateTextBtn) {
             generateTextBtn.disabled = false;
-            generateTextBtn.textContent = '✨ Generate from Text';
+            setButtonText(generateTextBtn, '✨ Generate from Text');
         }
     }
 }
@@ -161,36 +167,36 @@ function pollStatus() {
             
             if (data.status === 'complete') {
                 clearInterval(pollInterval);
-                
+
                 // Re-enable buttons
                 const generateBtn = document.getElementById('generateBtn');
                 const generateTextBtn = document.getElementById('generateTextBtn');
                 if (generateBtn) {
                     generateBtn.disabled = false;
-                    generateBtn.textContent = '📊 Generate from Sheet';
+                    setButtonText(generateBtn, '📊 Generate from Sheet');
                 }
                 if (generateTextBtn) {
                     generateTextBtn.disabled = false;
-                    generateTextBtn.textContent = '✨ Generate from Text';
+                    setButtonText(generateTextBtn, '✨ Generate from Text');
                 }
-                
+
                 // Reload page to show new post in gallery
                 window.location.reload();
-                
+
             } else if (data.status === 'error') {
                 clearInterval(pollInterval);
                 showError(data.error || 'Generation failed');
-                
+
                 document.getElementById('statusBar').classList.add('hidden');
                 const generateBtn = document.getElementById('generateBtn');
                 const generateTextBtn = document.getElementById('generateTextBtn');
                 if (generateBtn) {
                     generateBtn.disabled = false;
-                    generateBtn.textContent = '📊 Generate from Sheet';
+                    setButtonText(generateBtn, '📊 Generate from Sheet');
                 }
                 if (generateTextBtn) {
                     generateTextBtn.disabled = false;
-                    generateTextBtn.textContent = '✨ Generate from Text';
+                    setButtonText(generateTextBtn, '✨ Generate from Text');
                 }
             }
             // If status is 'running', continue polling
@@ -198,17 +204,17 @@ function pollStatus() {
         } catch (error) {
             clearInterval(pollInterval);
             showError('Failed to check status: ' + error.message);
-            
+
             // Re-enable buttons on error
             const generateBtn = document.getElementById('generateBtn');
             const generateTextBtn = document.getElementById('generateTextBtn');
             if (generateBtn) {
                 generateBtn.disabled = false;
-                generateBtn.textContent = '📊 Generate from Sheet';
+                setButtonText(generateBtn, '📊 Generate from Sheet');
             }
             if (generateTextBtn) {
                 generateTextBtn.disabled = false;
-                generateTextBtn.textContent = '✨ Generate from Text';
+                setButtonText(generateTextBtn, '✨ Generate from Text');
             }
         }
     }, 2000); // Poll every 2 seconds
@@ -241,21 +247,21 @@ function showLoader(jobId) {
     const statusBar = document.getElementById('statusBar');
     const generateBtn = document.getElementById('generateBtn');
     const generateTextBtn = document.getElementById('generateTextBtn');
-    
+
     // Show loading state
     statusBar.classList.remove('hidden');
     document.getElementById('statusText').textContent = 'AI agents are crafting your carousel... This takes 2-3 min. 🤖';
-    
-    // Disable both buttons
+
+    // Disable both buttons while this job runs
     if (generateBtn) {
         generateBtn.disabled = true;
-        generateBtn.textContent = 'Generating...';
+        setButtonText(generateBtn, 'Generating...');
     }
     if (generateTextBtn) {
         generateTextBtn.disabled = true;
-        generateTextBtn.textContent = 'Generating...';
+        setButtonText(generateTextBtn, 'Generating...');
     }
-    
+
     currentJobId = jobId;
     pollStatus();
 }

@@ -214,11 +214,24 @@
         }
     });
 
-    // Update running count indicator
+    // Helper to set button text (handles span inside button)
+    function setButtonText(btn, text) {
+        if (!btn) return;
+        const span = btn.querySelector('span');
+        if (span) {
+            span.textContent = text;
+        } else {
+            btn.textContent = text;
+        }
+    }
+
+    // Update running count indicator and button states
     function updateRunningCount(count, max) {
         const indicator = document.querySelector('.running-jobs-indicator');
         const countSpan = indicator.querySelector('.jobs-count');
         const labelSpan = indicator.querySelector('.jobs-label');
+        const generateBtn = document.getElementById('generateBtn');
+        const generateTextBtn = document.getElementById('generateTextBtn');
 
         countSpan.textContent = count + '/' + max;
 
@@ -226,17 +239,23 @@
         if (count >= max) {
             indicator.classList.add('at-capacity');
             labelSpan.textContent = 'At Capacity';
-            document.getElementById('generateBtn').disabled = true;
-            document.getElementById('generateTextBtn').disabled = true;
+            generateBtn.disabled = true;
+            generateTextBtn.disabled = true;
+            setButtonText(generateBtn, '⏳ At Capacity');
+            setButtonText(generateTextBtn, '⏳ At Capacity');
         } else if (count > 0) {
             indicator.classList.add('active');
             labelSpan.textContent = 'Running';
-            document.getElementById('generateBtn').disabled = false;
-            document.getElementById('generateTextBtn').disabled = false;
+            generateBtn.disabled = false;
+            generateTextBtn.disabled = false;
+            setButtonText(generateBtn, '📊 Generate from Sheet');
+            setButtonText(generateTextBtn, '✨ Generate from Text');
         } else {
             labelSpan.textContent = 'Ready';
-            document.getElementById('generateBtn').disabled = false;
-            document.getElementById('generateTextBtn').disabled = false;
+            generateBtn.disabled = false;
+            generateTextBtn.disabled = false;
+            setButtonText(generateBtn, '📊 Generate from Sheet');
+            setButtonText(generateTextBtn, '✨ Generate from Text');
         }
     }
 
