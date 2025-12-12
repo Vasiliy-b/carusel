@@ -12,12 +12,18 @@
 <body>
     <header>
         <div class="container">
-            <h1>🎨 Multi-Agent Content Generator</h1>
-            <div>
-                <button id="generateBtn" class="btn-primary" {% if active_job_id %}disabled{% endif %}>
-                    <span>{% if active_job_id %}⏳ Generating...{% else %}📊 Generate from Sheet{% endif %}</span>
+            <div class="header-row">
+                <h1>🎨 Multi-Agent Content Generator</h1>
+                <div class="running-jobs-indicator {% if running_count >= max_concurrent %}at-capacity{% elif running_count > 0 %}active{% endif %}">
+                    <span class="jobs-count">{{ running_count }}/{{ max_concurrent }}</span>
+                    <span class="jobs-label">{% if running_count >= max_concurrent %}At Capacity{% elif running_count > 0 %}Running{% else %}Ready{% endif %}</span>
+                </div>
+            </div>
+            <div class="header-buttons">
+                <button id="generateBtn" class="btn-primary" {% if running_count >= max_concurrent %}disabled{% endif %}>
+                    <span>📊 Generate from Sheet</span>
                 </button>
-                <button id="generateTextBtn" class="btn-primary" {% if active_job_id %}disabled{% endif %}>
+                <button id="generateTextBtn" class="btn-primary" {% if running_count >= max_concurrent %}disabled{% endif %}>
                     <span>✨ Generate from Text</span>
                 </button>
             </div>
@@ -25,21 +31,40 @@
     </header>
 
     <main class="container">
-        <div id="statusBar" class="status-bar {% if not active_job_id %}hidden{% endif %}">
-            <div class="spinner"></div>
-            <span id="statusText">🤖 AI agents are crafting your perfect carousel... This takes 2-3 minutes. They're perfectionists!</span>
+        <!-- Running Jobs Panel -->
+        {% if running_jobs %}
+        <div class="running-jobs-panel">
+            <h3>⏳ Running Generations ({{ running_count }}/{{ max_concurrent }})</h3>
+            <div class="running-jobs-list">
+                {% for job in running_jobs %}
+                <div class="running-job-item" data-job-id="{{ job.id }}">
+                    <div class="spinner-small"></div>
+                    <div class="job-info">
+                        <span class="job-mode">{{ job.input_mode|default('sheet', true)|capitalize }}</span>
+                        {% if job.text_preview %}
+                        <span class="job-preview">{{ job.text_preview }}</span>
+                        {% endif %}
+                    </div>
+                    <span class="job-time">Started {{ job.started_at }}</span>
+                </div>
+                {% endfor %}
+            </div>
         </div>
-        
+        {% endif %}
+
+        <div id="statusBar" class="status-bar hidden">
+            <div class="spinner"></div>
+            <span id="statusText">🤖 AI agents are crafting your perfect carousel... This takes 2-3 minutes.</span>
+        </div>
+
         <script>
-            // Resume polling if there's an active job
-            {% if active_job_id %}
-            const resumeJobId = "{{ active_job_id }}";
-            if (resumeJobId) {
-                window.addEventListener('DOMContentLoaded', () => {
-                    currentJobId = resumeJobId;
-                    pollStatus();
-                });
-            }
+            // Resume polling for running jobs
+            {% if running_jobs %}
+            window.addEventListener('DOMContentLoaded', () => {
+                {% for job in running_jobs %}
+                pollJobStatus("{{ job.id }}");
+                {% endfor %}
+            });
             {% endif %}
         </script>
 
@@ -161,21 +186,26 @@
     // Form submission
     document.getElementById('textInputForm').addEventListener('submit', async function(e) {
         e.preventDefault();
-        
+
         const formData = new FormData(this);
-        
+
         try {
             const response = await fetch('/generate_from_text', {
                 method: 'POST',
                 body: formData
             });
-            
+
             const data = await response.json();
-            
+
             if (response.ok) {
                 modal.style.display = 'none';
                 // Show loader and start polling
                 showLoader(data.job_id);
+                // Update running count indicator
+                updateRunningCount(data.running_count, data.max_concurrent);
+            } else if (response.status === 429) {
+                // At capacity
+                alert(`Max concurrent jobs (${data.max_concurrent}) reached. Currently running: ${data.running_count}. Please wait for a job to complete.`);
             } else {
                 alert('Error: ' + data.error);
             }
@@ -183,6 +213,50 @@
             alert('Error starting generation: ' + error);
         }
     });
+
+    // Update running count indicator
+    function updateRunningCount(count, max) {
+        const indicator = document.querySelector('.running-jobs-indicator');
+        const countSpan = indicator.querySelector('.jobs-count');
+        const labelSpan = indicator.querySelector('.jobs-label');
+
+        countSpan.textContent = count + '/' + max;
+
+        indicator.classList.remove('at-capacity', 'active');
+        if (count >= max) {
+            indicator.classList.add('at-capacity');
+            labelSpan.textContent = 'At Capacity';
+            document.getElementById('generateBtn').disabled = true;
+            document.getElementById('generateTextBtn').disabled = true;
+        } else if (count > 0) {
+            indicator.classList.add('active');
+            labelSpan.textContent = 'Running';
+            document.getElementById('generateBtn').disabled = false;
+            document.getElementById('generateTextBtn').disabled = false;
+        } else {
+            labelSpan.textContent = 'Ready';
+            document.getElementById('generateBtn').disabled = false;
+            document.getElementById('generateTextBtn').disabled = false;
+        }
+    }
+
+    // Poll job status (supports multiple concurrent jobs)
+    function pollJobStatus(jobId) {
+        const interval = setInterval(async () => {
+            try {
+                const response = await fetch('/status/' + jobId);
+                const data = await response.json();
+
+                if (data.status === 'complete' || data.status === 'error') {
+                    clearInterval(interval);
+                    // Reload page to show updated results and job list
+                    window.location.reload();
+                }
+            } catch (error) {
+                console.error('Error polling job', jobId, error);
+            }
+        }, 3000);
+    }
     </script>
 </body>
 </html>

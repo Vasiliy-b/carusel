@@ -46,7 +46,7 @@ def save_post_metadata_local(
 ### Post Title
 {generated_content.get('post_title', 'N/A')}
 
-### Image Texts (1-2 words per slide)
+### Image Texts (per slide)
 {json.dumps(generated_content.get('image_texts', []), indent=2)}
 
 ### Post Caption
@@ -111,7 +111,7 @@ def save_image_local(
         post_id: Unique post identifier
         image_number: Image number (1-10)
         image_bytes: Image data
-        image_text: The 1-2 word text on the image
+        image_text: The text overlay on the image
         output_dir: Directory to save files
     
     Returns:

@@ -157,36 +157,38 @@ copywriter_agent = LlmAgent(
     include_contents='none',  # Don't include conversation history - reduces context size
     instruction="""
     You are an expert social media copywriter specializing in high-engagement Instagram content.
-    
+
     Based on:
     - Original content: {post_content_text}
     - Analysis: {content_analysis}
     - Creative direction: {creative_brief}
-    
+
+    TEXT MODE: {is_text_mode}
+
     CRITICAL: If the content mentions specific characters, names, or unique elements (like "Cheburashka", "Gena", etc.),
     you MUST incorporate them into your copy! Don't be generic!
-    
-    Generate (be BRIEF!):
-    
+
+    Generate:
+
     1. **POST TITLE** (3-5 words max)
-    
-    2. **IMAGE TEXT** (1-2 words MAX per slide):
-       - Punchy 1-2 words ONLY
+
+    2. **IMAGE TEXT** (per slide - 10 total):
+       - If is_text_mode is True: Use natural sentence length. Short phrases, questions, or statements that fit the content. Let the message guide the length - can be 3-10 words per slide.
+       - If is_text_mode is False: 1-2 words MAX per slide. Punchy and bold only.
        - Generate 10 (one per slide)
-    
+
     3. **POST CAPTION** (100-200 chars max)
        - Hook + CTA + 3 hashtags
        - Keep it SHORT!
-    
+
     Output COMPACT JSON:
     {
         "post_title": "...",
-        "image_texts": ["WORD1", "WORD2", ...],
+        "image_texts": ["TEXT1", "TEXT2", ...],
         "post_caption": "...",
         "hashtags": ["#tag1", "#tag2", "#tag3"]
     }
-    
-    CRITICAL: image_texts MUST be 1-2 words each, bold and captivating!
+
     Keep output concise - no explanations, just the JSON.
     """,
     description="Creates engaging headers, captions, and micro-copy optimized for Instagram",
@@ -217,6 +219,10 @@ image_prompt_engineer_agent = LlmAgent(
     CRITICAL - STYLE REFERENCE STATUS: {has_style_reference}
     - If has_style_reference is True: DO NOT specify art_style or colors in your prompts! The reference image will provide the style.
     - If has_style_reference is False: Use the art_style and colors from creative_brief as normal.
+
+    TEXT MODE: {is_text_mode}
+    - If is_text_mode is True: Image texts can be full phrases/sentences (3-10 words). Ensure text is clearly readable.
+    - If is_text_mode is False: Image texts are 1-2 words only (punchy).
     
     CRITICAL REQUIREMENTS - ALL 10 slides MUST have:
     1. SAME font family across all 10 prompts
@@ -264,7 +270,7 @@ image_prompt_engineer_agent = LlmAgent(
     - Then: "[emotional atmosphere adjectives], [lighting details], [mood depth], 4K quality"
     
     Extract from copy_content:
-    - image_texts array (10 items, 1-2 words each)
+    - image_texts array (10 items - length varies by mode: phrases in text mode, 1-2 words in sheet mode)
     
     **CRITICAL**:
     - gemini-2.5-flash-image CAN generate text within images
@@ -344,7 +350,7 @@ image_prompt_engineer_agent = LlmAgent(
     
     ONLY OUTPUT: The JSON array inside code fence!
     """,
-    description="Creates 10 rich 80-100 token prompts for gemini-2.5-flash-image",
+    description="Creates 10 rich 80-100 token prompts for image generation (supports variable text length based on mode)",
     output_key="image_prompts"  # Regular key - MUST persist for 10-image loop!
 )
 

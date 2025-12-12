@@ -51,7 +51,7 @@ class Config:
     # Model Configuration
     # ============================================
     TEXT_MODEL = os.getenv('TEXT_MODEL', 'gemini-2.5-flash')
-    IMAGE_MODEL = os.getenv('IMAGE_MODEL', 'gemini-2.5-flash-image')  # nanobabana
+    IMAGE_MODEL = os.getenv('IMAGE_MODEL', 'gemini-3-pro-image-preview')
     
     # ============================================
     # Generation Settings
@@ -90,8 +90,14 @@ class Config:
     SESSION_ID_PREFIX = os.getenv('SESSION_ID_PREFIX', 'content_gen')
     ENABLE_STATE_PERSISTENCE = os.getenv('ENABLE_STATE_PERSISTENCE', 'FALSE').upper() == 'TRUE'
     STATE_STORAGE_PATH = os.getenv('STATE_STORAGE_PATH', './state')
-    IMAGE_GENERATION_TIMEOUT = int(os.getenv('IMAGE_GENERATION_TIMEOUT', '60'))
+    IMAGE_GENERATION_TIMEOUT = int(os.getenv('IMAGE_GENERATION_TIMEOUT', '60'))  # per-image timeout
     TEXT_GENERATION_TIMEOUT = int(os.getenv('TEXT_GENERATION_TIMEOUT', '30'))
+
+    # ============================================
+    # Multi-Session / Job Management
+    # ============================================
+    MAX_CONCURRENT_JOBS = int(os.getenv('MAX_CONCURRENT_JOBS', '5'))  # max parallel generations
+    JOB_DB_PATH = os.getenv('JOB_DB_PATH', 'jobs.db')  # SQLite database path
     
     # ============================================
     # Image Upload Settings

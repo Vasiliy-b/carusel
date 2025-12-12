@@ -762,6 +762,9 @@ async def generate_all_images_parallel(
                 logger.info(f"PARALLEL_GEN: {img_type} image size: {len(img_data)} bytes")
         else:
             logger.info(f"PARALLEL_GEN: No reference images provided")
+
+        # Log image model being used
+        logger.info(f"PARALLEL_GEN: Using image model: {Config.IMAGE_MODEL}")
         
         # Import Gemini SDK
         from google import genai
@@ -779,170 +782,194 @@ async def generate_all_images_parallel(
         logger.info(f"PARALLEL_GEN: Using semaphore with max {Config.MAX_CONCURRENT_IMAGE_REQUESTS} concurrent requests")
         
         async def generate_single_image(idx, prompt_data):
-            """Generate a single image asynchronously"""
-            try:
-                logger.info(f"PARALLEL_GEN: [{idx+1}/10] Starting image generation...")
-                logger.info(f"PARALLEL_GEN: [{idx+1}/10] Waiting for semaphore slot...")
-                
-                # Build content parts
-                parts = []
-                
-                # Get main prompt first
-                prompt_text = prompt_data.get('p') or prompt_data.get('prompt', '')
-                image_text = prompt_data.get('t') or prompt_data.get('image_text', '')
-                
-                # Build prompt with simple reference instructions
-                prompt_parts = []
-                
-                # Add reference image instructions if present (SIMPLE AND CLEAR)
-                if reference_images:
-                    if 'style' in reference_images:
-                        prompt_parts.append("Use the provided image as a style reference.")
-                    if 'persona' in reference_images:
-                        prompt_parts.append("Use the person from the provided image, preserving their facial features.")
-                
-                # Add main prompt
-                prompt_parts.append(prompt_text)
-                
-                # Add STYLE suffix ONLY if no style reference (avoid conflicts)
-                if Config.STYLE and 'style' not in reference_images:
-                    prompt_parts.append(Config.STYLE)
-                    logger.info(f"PARALLEL_GEN: [{idx+1}/10] Added global STYLE suffix")
-                elif 'style' in reference_images:
-                    logger.info(f"PARALLEL_GEN: [{idx+1}/10] Skipped global STYLE (using reference image)")
-                
-                full_text = " ".join(prompt_parts)
-                
-                # Per Gemini docs: text first, then images
-                parts.append(types.Part(text=full_text))
-                
-                # Add reference images after text
-                if reference_images:
-                    logger.info(f"PARALLEL_GEN: [{idx+1}/10] Adding {len(reference_images)} reference image(s)")
-                    if 'style' in reference_images:
-                        parts.append(types.Part(
-                            inline_data=types.Blob(
-                                mime_type='image/png',
-                                data=reference_images['style']
+            """Generate a single image asynchronously with retry and timeout"""
+            max_retries = Config.RETRY_ATTEMPTS  # default 3
+            base_delay = Config.RETRY_DELAY  # default 2
+
+            # Get prompt data outside retry loop
+            prompt_text = prompt_data.get('p') or prompt_data.get('prompt', '')
+            image_text = prompt_data.get('t') or prompt_data.get('image_text', '')
+
+            for attempt in range(max_retries):
+                try:
+                    if attempt > 0:
+                        logger.info(f"PARALLEL_GEN: [{idx+1}/10] Retry attempt {attempt+1}/{max_retries}")
+                    else:
+                        logger.info(f"PARALLEL_GEN: [{idx+1}/10] Starting image generation...")
+
+                    logger.info(f"PARALLEL_GEN: [{idx+1}/10] Waiting for semaphore slot...")
+
+                    # Build content parts
+                    parts = []
+
+                    # Build prompt with simple reference instructions
+                    prompt_parts = []
+
+                    # Add reference image instructions if present (SIMPLE AND CLEAR)
+                    if reference_images:
+                        if 'style' in reference_images:
+                            prompt_parts.append("Use the provided image as a style reference.")
+                        if 'persona' in reference_images:
+                            prompt_parts.append("Use the person from the provided image, preserving their facial features.")
+
+                    # Add main prompt
+                    prompt_parts.append(prompt_text)
+
+                    # Add STYLE suffix ONLY if no style reference (avoid conflicts)
+                    if Config.STYLE and 'style' not in reference_images:
+                        prompt_parts.append(Config.STYLE)
+                        logger.info(f"PARALLEL_GEN: [{idx+1}/10] Added global STYLE suffix")
+                    elif 'style' in reference_images:
+                        logger.info(f"PARALLEL_GEN: [{idx+1}/10] Skipped global STYLE (using reference image)")
+
+                    full_text = " ".join(prompt_parts)
+
+                    # Per Gemini docs: text first, then images
+                    parts.append(types.Part(text=full_text))
+
+                    # Add reference images after text
+                    if reference_images:
+                        logger.info(f"PARALLEL_GEN: [{idx+1}/10] Adding {len(reference_images)} reference image(s)")
+                        if 'style' in reference_images:
+                            parts.append(types.Part(
+                                inline_data=types.Blob(
+                                    mime_type='image/png',
+                                    data=reference_images['style']
+                                )
+                            ))
+                            logger.info(f"PARALLEL_GEN: [{idx+1}/10] Added STYLE reference")
+
+                        if 'persona' in reference_images:
+                            parts.append(types.Part(
+                                inline_data=types.Blob(
+                                    mime_type='image/png',
+                                    data=reference_images['persona']
+                                )
+                            ))
+                            logger.info(f"PARALLEL_GEN: [{idx+1}/10] Added PERSONA reference")
+
+                    logger.info(f"PARALLEL_GEN: [{idx + 1}/10] Text: '{image_text}'")
+                    logger.info(f"PARALLEL_GEN: [{idx + 1}/10] Prompt length: {len(full_text)} chars")
+                    logger.info(f"PARALLEL_GEN: [{idx + 1}/10] Total parts: {len(parts)}")
+                    if reference_images:
+                        logger.info(f"PARALLEL_GEN: [{idx + 1}/10] Reference types: {list(reference_images.keys())}")
+
+                    # Generate image (run in thread to avoid blocking)
+                    logger.info(f"PARALLEL_GEN: [{idx + 1}/10] Calling {Config.IMAGE_MODEL} API...")
+                    logger.info(f"PARALLEL_GEN: [{idx + 1}/10] Aspect ratio: {Config.IMAGE_ASPECT_RATIO}")
+
+                    # Match official Model Garden config EXACTLY (except IMAGE-only modality)
+                    gen_config = types.GenerateContentConfig(
+                        temperature=1,
+                        top_p=0.95,
+                        max_output_tokens=32768,
+                        response_modalities=["IMAGE"],  # Force IMAGE-only to prevent NO_IMAGE errors
+                        safety_settings=[
+                            types.SafetySetting(
+                                category="HARM_CATEGORY_HATE_SPEECH",
+                                threshold="OFF"  # OFF per official snippet, not BLOCK_NONE
+                            ),
+                            types.SafetySetting(
+                                category="HARM_CATEGORY_DANGEROUS_CONTENT",
+                                threshold="OFF"
+                            ),
+                            types.SafetySetting(
+                                category="HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                                threshold="OFF"
+                            ),
+                            types.SafetySetting(
+                                category="HARM_CATEGORY_HARASSMENT",
+                                threshold="OFF"
                             )
-                        ))
-                        logger.info(f"PARALLEL_GEN: [{idx+1}/10] Added STYLE reference")
-                    
-                    if 'persona' in reference_images:
-                        parts.append(types.Part(
-                            inline_data=types.Blob(
-                                mime_type='image/png',
-                                data=reference_images['persona']
+                        ],
+                        image_config=types.ImageConfig(
+                            aspect_ratio=Config.IMAGE_ASPECT_RATIO
+                        )
+                    )
+
+                    # Acquire semaphore before API call to limit concurrency
+                    async with semaphore:
+                        logger.info(f"PARALLEL_GEN: [{idx + 1}/10] Acquired semaphore slot, calling API...")
+                        start_time = asyncio.get_event_loop().time()
+
+                        # Per-image timeout to prevent hanging on slow API responses
+                        try:
+                            response = await asyncio.wait_for(
+                                asyncio.to_thread(
+                                    client.models.generate_content,
+                                    model=Config.IMAGE_MODEL,
+                                    contents=parts,
+                                    config=gen_config
+                                ),
+                                timeout=Config.IMAGE_GENERATION_TIMEOUT  # 60s per image
                             )
-                        ))
-                        logger.info(f"PARALLEL_GEN: [{idx+1}/10] Added PERSONA reference")
-                
-                logger.info(f"PARALLEL_GEN: [{idx + 1}/10] Text: '{image_text}'")
-                logger.info(f"PARALLEL_GEN: [{idx + 1}/10] Prompt length: {len(full_text)} chars")
-                logger.info(f"PARALLEL_GEN: [{idx + 1}/10] Total parts: {len(parts)}")
-                if reference_images:
-                    logger.info(f"PARALLEL_GEN: [{idx + 1}/10] Reference types: {list(reference_images.keys())}")
-                
-                # Generate image (run in thread to avoid blocking)
-                logger.info(f"PARALLEL_GEN: [{idx + 1}/10] Calling {Config.IMAGE_MODEL} API...")
-                logger.info(f"PARALLEL_GEN: [{idx + 1}/10] Aspect ratio: {Config.IMAGE_ASPECT_RATIO}")
-                
-                # Match official Model Garden config EXACTLY (except IMAGE-only modality)
-                gen_config = types.GenerateContentConfig(
-                    temperature=1,
-                    top_p=0.95,
-                    max_output_tokens=32768,
-                    response_modalities=["IMAGE"],  # Force IMAGE-only to prevent NO_IMAGE errors
-                    safety_settings=[
-                        types.SafetySetting(
-                            category="HARM_CATEGORY_HATE_SPEECH",
-                            threshold="OFF"  # OFF per official snippet, not BLOCK_NONE
-                        ),
-                        types.SafetySetting(
-                            category="HARM_CATEGORY_DANGEROUS_CONTENT",
-                            threshold="OFF"
-                        ),
-                        types.SafetySetting(
-                            category="HARM_CATEGORY_SEXUALLY_EXPLICIT",
-                            threshold="OFF"
-                        ),
-                        types.SafetySetting(
-                            category="HARM_CATEGORY_HARASSMENT",
-                            threshold="OFF"
-                        )
-                    ],
-                    image_config=types.ImageConfig(
-                        aspect_ratio=Config.IMAGE_ASPECT_RATIO
-                    )
-                )
-                
-                # Acquire semaphore before API call to limit concurrency
-                async with semaphore:
-                    logger.info(f"PARALLEL_GEN: [{idx + 1}/10] Acquired semaphore slot, calling API...")
-                    start_time = asyncio.get_event_loop().time()
-                    
-                    response = await asyncio.to_thread(
-                        client.models.generate_content,
-                        model=Config.IMAGE_MODEL,
-                        contents=parts,
-                        config=gen_config
-                    )
-                    
-                    elapsed = asyncio.get_event_loop().time() - start_time
-                    logger.info(f"PARALLEL_GEN: [{idx + 1}/10] API call completed in {elapsed:.2f}s")
-                
-                # Extract and save image with better error handling
-                if not response.candidates or len(response.candidates) == 0:
-                    logger.error(f"PARALLEL_GEN: [{idx + 1}/10] No candidates in response")
-                    logger.error(f"PARALLEL_GEN: [{idx + 1}/10] Response: {response}")
-                    return {'index': idx, 'status': 'error', 'error': 'No candidates - possibly safety filter'}
-                
-                candidate = response.candidates[0]
-                
-                # Log finish reason if not normal
-                if hasattr(candidate, 'finish_reason') and candidate.finish_reason:
-                    logger.info(f"PARALLEL_GEN: [{idx + 1}/10] Finish reason: {candidate.finish_reason}")
-                
-                if not candidate.content or not candidate.content.parts:
-                    logger.error(f"PARALLEL_GEN: [{idx + 1}/10] No content.parts in response")
-                    if hasattr(candidate, 'finish_reason'):
-                        logger.error(f"PARALLEL_GEN: [{idx + 1}/10] Finish reason: {candidate.finish_reason}")
-                    if hasattr(candidate, 'safety_ratings'):
-                        logger.error(f"PARALLEL_GEN: [{idx + 1}/10] Safety ratings: {candidate.safety_ratings}")
-                    return {'index': idx, 'status': 'error', 'error': f'No content.parts - finish_reason: {getattr(candidate, "finish_reason", "unknown")}'}
-                
-                for part in candidate.content.parts:
-                    if part.inline_data:
-                        image_bytes = part.inline_data.data
-                        logger.info(f"PARALLEL_GEN: [{idx + 1}/10] Received image ({len(image_bytes)} bytes)")
-                        
-                        # Save locally
-                        from .local_saver import save_image_local
-                        current_post = tool_context.state.get('current_post', {})
-                        post_id = current_post.get('post_id', 'unknown_post') if isinstance(current_post, dict) else 'unknown_post'
-                        
-                        saved_path = save_image_local(
-                            post_id=post_id,
-                            image_number=idx,
-                            image_bytes=image_bytes,
-                            image_text=image_text
-                        )
-                        
-                        logger.info(f"PARALLEL_GEN: ✓ [{idx + 1}/10] Saved: {saved_path}")
-                        
-                        return {
-                            'index': idx,
-                            'status': 'success',
-                            'path': saved_path,
-                            'size': len(image_bytes),
-                            'text': image_text
-                        }
-                
-                return {'index': idx, 'status': 'error', 'error': 'No image data in response'}
-            
-            except Exception as e:
-                logger.error(f"Error generating image {idx + 1}: {e}")
-                return {'index': idx, 'status': 'error', 'error': str(e)}
+                        except asyncio.TimeoutError:
+                            raise Exception(f"Image generation timed out after {Config.IMAGE_GENERATION_TIMEOUT}s")
+
+                        elapsed = asyncio.get_event_loop().time() - start_time
+                        logger.info(f"PARALLEL_GEN: [{idx + 1}/10] API call completed in {elapsed:.2f}s")
+
+                    # Extract and save image with better error handling
+                    if not response.candidates or len(response.candidates) == 0:
+                        logger.error(f"PARALLEL_GEN: [{idx + 1}/10] No candidates in response")
+                        logger.error(f"PARALLEL_GEN: [{idx + 1}/10] Response: {response}")
+                        raise Exception('No candidates - possibly safety filter')
+
+                    candidate = response.candidates[0]
+
+                    # Log finish reason if not normal
+                    if hasattr(candidate, 'finish_reason') and candidate.finish_reason:
+                        logger.info(f"PARALLEL_GEN: [{idx + 1}/10] Finish reason: {candidate.finish_reason}")
+
+                    if not candidate.content or not candidate.content.parts:
+                        logger.error(f"PARALLEL_GEN: [{idx + 1}/10] No content.parts in response")
+                        if hasattr(candidate, 'finish_reason'):
+                            logger.error(f"PARALLEL_GEN: [{idx + 1}/10] Finish reason: {candidate.finish_reason}")
+                        if hasattr(candidate, 'safety_ratings'):
+                            logger.error(f"PARALLEL_GEN: [{idx + 1}/10] Safety ratings: {candidate.safety_ratings}")
+                        raise Exception(f'No content.parts - finish_reason: {getattr(candidate, "finish_reason", "unknown")}')
+
+                    for part in candidate.content.parts:
+                        if part.inline_data:
+                            image_bytes = part.inline_data.data
+                            logger.info(f"PARALLEL_GEN: [{idx + 1}/10] Received image ({len(image_bytes)} bytes)")
+
+                            # Save locally
+                            from .local_saver import save_image_local
+                            current_post = tool_context.state.get('current_post', {})
+                            post_id = current_post.get('post_id', 'unknown_post') if isinstance(current_post, dict) else 'unknown_post'
+
+                            saved_path = save_image_local(
+                                post_id=post_id,
+                                image_number=idx,
+                                image_bytes=image_bytes,
+                                image_text=image_text
+                            )
+
+                            logger.info(f"PARALLEL_GEN: ✓ [{idx + 1}/10] Saved: {saved_path}")
+
+                            return {
+                                'index': idx,
+                                'status': 'success',
+                                'path': saved_path,
+                                'size': len(image_bytes),
+                                'text': image_text
+                            }
+
+                    raise Exception('No image data in response')
+
+                except Exception as e:
+                    # Retry logic with exponential backoff
+                    if attempt < max_retries - 1:
+                        delay = base_delay * (2 ** attempt)  # exponential: 2, 4, 8 seconds
+                        logger.warning(f"PARALLEL_GEN: [{idx+1}/10] Attempt {attempt+1} failed, retrying in {delay}s: {e}")
+                        await asyncio.sleep(delay)
+                    else:
+                        logger.error(f"PARALLEL_GEN: [{idx+1}/10] All {max_retries} attempts failed: {e}")
+                        return {'index': idx, 'status': 'error', 'error': str(e)}
+
+            # Should not reach here, but just in case
+            return {'index': idx, 'status': 'error', 'error': 'Unexpected end of retry loop'}
         
         # Generate all images in parallel with timeout
         logger.info(f"PARALLEL_GEN: Launching {len(image_prompts)} concurrent tasks...")

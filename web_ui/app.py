@@ -1,9 +1,9 @@
 """
 Flask Web UI for Multi-Agent Content Generator
 Simple interface for SMM team to trigger generations and browse results
+Supports multi-session with SQLite job management.
 """
 import os
-import json
 import subprocess
 import uuid
 import glob
@@ -16,6 +16,9 @@ from io import BytesIO
 from flask import Flask, render_template, jsonify, request, send_file
 from werkzeug.utils import secure_filename
 import threading
+
+# Import SQLite job manager
+from .job_db import job_db
 
 # Setup logging for web UI
 logging.basicConfig(
@@ -41,65 +44,15 @@ ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'webp'}
 # Base paths
 BASE_DIR = Path(__file__).parent.parent
 OUTPUT_DIR = BASE_DIR / "output" / "posts"
-JOBS_FILE = BASE_DIR / "web_ui" / "jobs.json"
 
 def allowed_file(filename):
     """Check if uploaded file has allowed extension"""
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
-# Ensure jobs file exists and clean up stale jobs on startup
-if not JOBS_FILE.exists():
-    JOBS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with open(JOBS_FILE, 'w') as f:
-        json.dump({}, f)
-else:
-    # Clean up any stale "running" jobs on server restart
-    try:
-        with open(JOBS_FILE, 'r') as f:
-            jobs = json.load(f)
-        
-        # Mark all "running" jobs as "error" (server was restarted mid-generation)
-        stale_count = 0
-        for job_id, job in jobs.items():
-            if job.get('status') == 'running':
-                job['status'] = 'error'
-                job['error'] = 'Server restarted during generation'
-                job['completed_at'] = datetime.now().isoformat()
-                stale_count += 1
-        
-        if stale_count > 0:
-            with open(JOBS_FILE, 'w') as f:
-                json.dump(jobs, f, indent=2)
-            print(f"Cleaned up {stale_count} stale job(s)")
-    except Exception as e:
-        print(f"Error cleaning stale jobs: {e}")
-
-
-def load_jobs():
-    """Load jobs from persistent storage"""
-    try:
-        with open(JOBS_FILE, 'r') as f:
-            return json.load(f)
-    except:
-        return {}
-
-
-def save_jobs(jobs):
-    """Save jobs to persistent storage"""
-    try:
-        with open(JOBS_FILE, 'w') as f:
-            json.dump(jobs, f, indent=2)
-    except Exception as e:
-        print(f"Error saving jobs: {e}")
-
-
-def get_active_job():
-    """Get currently running job if any"""
-    jobs = load_jobs()
-    for job_id, job in jobs.items():
-        if job.get('status') == 'running':
-            return job_id, job
-    return None, None
+# Clean up stale jobs on startup (SQLite-based)
+stale_count = job_db.cleanup_stale_jobs()
+if stale_count > 0:
+    logger.info(f"Cleaned up {stale_count} stale job(s) from previous run")
 
 
 def scan_generated_posts():
@@ -168,15 +121,14 @@ def scan_generated_posts():
 
 
 def run_generator_async(job_id):
-    """Run content generator in background"""
+    """Run content generator in background (sheet mode)"""
     logger.info(f"BACKGROUND: Starting sheet mode generation for job {job_id}")
-    jobs = load_jobs()
-    
+
     try:
         # Set STYLE environment variable (empty by default - set in UI if needed)
         env = os.environ.copy()
         env['STYLE'] = os.environ.get('STYLE', '')  # Use current STYLE or empty
-        
+
         # Use venv Python interpreter
         venv_python = BASE_DIR / ".venv" / "bin" / "python"
         if not venv_python.exists():
@@ -185,7 +137,7 @@ def run_generator_async(job_id):
         else:
             venv_python = str(venv_python)
             logger.info(f"BACKGROUND: Using venv python: {venv_python}")
-        
+
         logger.info(f"BACKGROUND: Running subprocess for sheet mode...")
         # Run generator with venv python
         result = subprocess.run(
@@ -195,7 +147,7 @@ def run_generator_async(job_id):
             text=True,
             env=env
         )
-        
+
         # Parse output to find generated post_id
         post_id = None
         for line in result.stdout.split('\n'):
@@ -205,36 +157,20 @@ def run_generator_async(job_id):
                 if len(parts) > 1:
                     post_id = 'post_' + parts[1].split()[0]
                     break
-        
+
         logger.info(f"BACKGROUND: Subprocess completed with return code {result.returncode}")
-        
+
         if result.returncode == 0:
             logger.info(f"BACKGROUND: Job {job_id} completed successfully. Post: {post_id}")
-            jobs[job_id] = {
-                "status": "complete",
-                "post_id": post_id,
-                "completed_at": datetime.now().isoformat()
-            }
+            job_db.complete_job(job_id, post_id)
         else:
             error_msg = result.stderr[-500:] if result.stderr else "Unknown error"
             logger.error(f"BACKGROUND: Job {job_id} failed: {error_msg}")
-            jobs[job_id] = {
-                "status": "error",
-                "error": error_msg,
-                "completed_at": datetime.now().isoformat()
-            }
-            
+            job_db.fail_job(job_id, error_msg)
+
     except Exception as e:
         logger.error(f"BACKGROUND: Exception in job {job_id}: {e}", exc_info=True)
-        jobs[job_id] = {
-            "status": "error",
-            "error": str(e),
-            "completed_at": datetime.now().isoformat()
-        }
-    
-    finally:
-        save_jobs(jobs)
-        logger.info(f"BACKGROUND: Job {job_id} status saved")
+        job_db.fail_job(job_id, str(e))
 
 
 @app.route('/')
@@ -243,53 +179,52 @@ def index():
     logger.info("INDEX: Loading homepage")
     posts = scan_generated_posts()
     logger.info(f"INDEX: Found {len(posts)} posts")
-    
-    # Check if there's an active job
-    active_job_id, active_job = get_active_job()
-    
+
+    # Get running jobs info (multi-session support)
+    running_jobs = job_db.get_running_jobs()
+    running_count = len(running_jobs)
+    max_concurrent = job_db.MAX_CONCURRENT_JOBS
+
     # Get current STYLE setting (empty by default)
     current_style = os.environ.get('STYLE', '')
-    
-    return render_template('index.html', 
-                          posts=posts, 
-                          active_job_id=active_job_id,
-                          active_job=active_job,
+
+    return render_template('index.html',
+                          posts=posts,
+                          running_jobs=running_jobs,
+                          running_count=running_count,
+                          max_concurrent=max_concurrent,
                           current_style=current_style)
 
 
 @app.route('/generate', methods=['POST'])
 def generate():
-    """Trigger new content generation"""
+    """Trigger new content generation (sheet mode)"""
     logger.info("GENERATE: Sheet mode generation triggered")
-    
-    # Check if already running
-    existing_job_id, existing_job = get_active_job()
-    if existing_job_id:
-        logger.warning(f"GENERATE: Already running job {existing_job_id}")
-        return jsonify({
-            "error": "Generation already in progress",
-            "job_id": existing_job_id
-        }), 409  # Conflict
-    
+
     job_id = str(uuid.uuid4())
-    logger.info(f"GENERATE: Created new job {job_id}")
-    
-    # Initialize job in persistent storage
-    jobs = load_jobs()
-    jobs[job_id] = {
-        "status": "running",
-        "started_at": datetime.now().isoformat()
-    }
-    save_jobs(jobs)
-    
+
+    # Atomically create job if under concurrency limit
+    if not job_db.create_job(job_id, input_mode='sheet'):
+        running_count = job_db.get_running_count()
+        logger.warning(f"GENERATE: At capacity ({running_count}/{job_db.MAX_CONCURRENT_JOBS})")
+        return jsonify({
+            "error": f"Max concurrent jobs ({job_db.MAX_CONCURRENT_JOBS}) reached. {running_count} running.",
+            "running_count": running_count,
+            "max_concurrent": job_db.MAX_CONCURRENT_JOBS
+        }), 429  # Too Many Requests
+
+    logger.info(f"GENERATE: Created job {job_id}")
+
     # Run in background thread
     thread = threading.Thread(target=run_generator_async, args=(job_id,))
     thread.daemon = True
     thread.start()
-    
+
     return jsonify({
         "job_id": job_id,
-        "status": "running"
+        "status": "running",
+        "running_count": job_db.get_running_count(),
+        "max_concurrent": job_db.MAX_CONCURRENT_JOBS
     })
 
 
@@ -297,31 +232,22 @@ def generate():
 def generate_from_text():
     """Generate content from free-form text input with optional reference images"""
     logger.info("GENERATE_TEXT: Text mode generation triggered")
-    
-    # Check if already running
-    existing_job_id, existing_job = get_active_job()
-    if existing_job_id:
-        logger.warning(f"GENERATE_TEXT: Already running job {existing_job_id}")
-        return jsonify({
-            "error": "Generation already in progress",
-            "job_id": existing_job_id
-        }), 409
-    
-    # Get text input
+
+    # Get text input first (validate before creating job)
     user_text = request.form.get('text_input', '').strip()
     if not user_text:
         logger.error("GENERATE_TEXT: No text input provided")
         return jsonify({"error": "Text input is required"}), 400
-    
+
     # Get aspect ratio
     aspect_ratio = request.form.get('aspect_ratio', '1:1')
-    
+
     logger.info(f"GENERATE_TEXT: Received text input ({len(user_text)} chars)")
     logger.info(f"GENERATE_TEXT: Aspect ratio: {aspect_ratio}")
-    
+
     # Handle file uploads
     reference_images = {}
-    
+
     if 'style_image' in request.files:
         file = request.files['style_image']
         if file and file.filename and allowed_file(file.filename):
@@ -330,7 +256,7 @@ def generate_from_text():
             file.save(filepath)
             reference_images['style'] = str(filepath)
             logger.info(f"GENERATE_TEXT: STYLE image uploaded: {filename}")
-    
+
     if 'persona_image' in request.files:
         file = request.files['persona_image']
         if file and file.filename and allowed_file(file.filename):
@@ -339,19 +265,29 @@ def generate_from_text():
             file.save(filepath)
             reference_images['persona'] = str(filepath)
             logger.info(f"GENERATE_TEXT: PERSONA image uploaded: {filename}")
-    
+
     job_id = str(uuid.uuid4())
-    
-    # Initialize job
-    jobs = load_jobs()
-    jobs[job_id] = {
-        "status": "running",
-        "started_at": datetime.now().isoformat(),
-        "input_mode": "text",
-        "text_input": user_text[:100] + "..." if len(user_text) > 100 else user_text
-    }
-    save_jobs(jobs)
-    
+    text_preview = user_text[:100] + "..." if len(user_text) > 100 else user_text
+
+    # Atomically create job if under concurrency limit
+    if not job_db.create_job(job_id, input_mode='text', text_preview=text_preview):
+        running_count = job_db.get_running_count()
+        logger.warning(f"GENERATE_TEXT: At capacity ({running_count}/{job_db.MAX_CONCURRENT_JOBS})")
+        # Cleanup uploaded files since we can't start the job
+        for img_path in reference_images.values():
+            try:
+                if os.path.exists(img_path):
+                    os.remove(img_path)
+            except:
+                pass
+        return jsonify({
+            "error": f"Max concurrent jobs ({job_db.MAX_CONCURRENT_JOBS}) reached. {running_count} running.",
+            "running_count": running_count,
+            "max_concurrent": job_db.MAX_CONCURRENT_JOBS
+        }), 429
+
+    logger.info(f"GENERATE_TEXT: Created job {job_id}")
+
     # Run in background
     thread = threading.Thread(
         target=run_generator_async_text_mode,
@@ -359,11 +295,13 @@ def generate_from_text():
     )
     thread.daemon = True
     thread.start()
-    
+
     return jsonify({
         "job_id": job_id,
         "status": "running",
-        "input_mode": "text"
+        "input_mode": "text",
+        "running_count": job_db.get_running_count(),
+        "max_concurrent": job_db.MAX_CONCURRENT_JOBS
     })
 
 
@@ -373,9 +311,7 @@ def run_generator_async_text_mode(job_id, user_text, reference_images, aspect_ra
     logger.info(f"BACKGROUND_TEXT: Text length: {len(user_text)} chars")
     logger.info(f"BACKGROUND_TEXT: Reference images: {list(reference_images.keys())}")
     logger.info(f"BACKGROUND_TEXT: Aspect ratio: {aspect_ratio}")
-    
-    jobs = load_jobs()
-    
+
     try:
         env = os.environ.copy()
         # Use current STYLE or empty (don't hardcode - allows style reference to work)
@@ -383,7 +319,7 @@ def run_generator_async_text_mode(job_id, user_text, reference_images, aspect_ra
         env['INPUT_MODE'] = 'text'
         env['USER_TEXT_INPUT'] = user_text
         env['IMAGE_ASPECT_RATIO'] = aspect_ratio
-        
+
         # Pass reference image paths as env vars
         if reference_images:
             if 'style' in reference_images:
@@ -392,7 +328,7 @@ def run_generator_async_text_mode(job_id, user_text, reference_images, aspect_ra
             if 'persona' in reference_images:
                 env['REFERENCE_PERSONA_IMAGE'] = reference_images['persona']
                 logger.info(f"BACKGROUND_TEXT: Set REFERENCE_PERSONA_IMAGE env var")
-        
+
         venv_python = BASE_DIR / ".venv" / "bin" / "python"
         if not venv_python.exists():
             logger.warning(f"BACKGROUND_TEXT: venv not found, using system python")
@@ -400,7 +336,7 @@ def run_generator_async_text_mode(job_id, user_text, reference_images, aspect_ra
         else:
             venv_python = str(venv_python)
             logger.info(f"BACKGROUND_TEXT: Using venv python: {venv_python}")
-        
+
         logger.info(f"BACKGROUND_TEXT: Running subprocess...")
         result = subprocess.run(
             [venv_python, '-m', 'content_generator.main'],
@@ -409,7 +345,7 @@ def run_generator_async_text_mode(job_id, user_text, reference_images, aspect_ra
             text=True,
             env=env
         )
-        
+
         # Extract post_id from output
         post_id = None
         for line in result.stdout.split('\n'):
@@ -419,36 +355,23 @@ def run_generator_async_text_mode(job_id, user_text, reference_images, aspect_ra
                 if match:
                     post_id = match.group(0)
                     break
-        
+
         logger.info(f"BACKGROUND_TEXT: Subprocess completed with return code {result.returncode}")
-        
+
         if result.returncode == 0:
             logger.info(f"BACKGROUND_TEXT: Job {job_id} completed successfully. Post: {post_id}")
             logger.info(f"BACKGROUND_TEXT: stdout preview: {result.stdout[-200:] if result.stdout else 'None'}")
-            jobs[job_id] = {
-                "status": "complete",
-                "post_id": post_id,
-                "input_mode": "text",
-                "completed_at": datetime.now().isoformat()
-            }
+            job_db.complete_job(job_id, post_id)
         else:
             error_msg = result.stderr[-500:] if result.stderr else "Unknown error"
             logger.error(f"BACKGROUND_TEXT: Job {job_id} failed: {error_msg}")
             logger.error(f"BACKGROUND_TEXT: Full stderr: {result.stderr}")
-            jobs[job_id] = {
-                "status": "error",
-                "error": error_msg,
-                "completed_at": datetime.now().isoformat()
-            }
-    
+            job_db.fail_job(job_id, error_msg)
+
     except Exception as e:
         logger.error(f"BACKGROUND_TEXT: Exception in job {job_id}: {e}", exc_info=True)
-        jobs[job_id] = {
-            "status": "error",
-            "error": str(e),
-            "completed_at": datetime.now().isoformat()
-        }
-    
+        job_db.fail_job(job_id, str(e))
+
     finally:
         # Cleanup uploaded files
         logger.info(f"BACKGROUND_TEXT: Cleaning up uploaded files...")
@@ -459,9 +382,6 @@ def run_generator_async_text_mode(job_id, user_text, reference_images, aspect_ra
                     logger.info(f"BACKGROUND_TEXT: Deleted {img_type} image: {img_path}")
             except Exception as e:
                 logger.warning(f"BACKGROUND_TEXT: Failed to delete {img_path}: {e}")
-        
-        save_jobs(jobs)
-        logger.info(f"BACKGROUND_TEXT: Job {job_id} finalized")
 
 
 @app.route('/update-style', methods=['POST'])
@@ -496,13 +416,12 @@ def update_style():
 @app.route('/status/<job_id>')
 def status(job_id):
     """Check generation job status"""
-    jobs = load_jobs()
-    
-    if job_id not in jobs:
+    job = job_db.get_job(job_id)
+
+    if not job:
         logger.warning(f"STATUS: Job {job_id} not found")
         return jsonify({"error": "Job not found"}), 404
-    
-    job = jobs[job_id]
+
     logger.debug(f"STATUS: Job {job_id} status: {job.get('status')}")
     return jsonify(job)
 
