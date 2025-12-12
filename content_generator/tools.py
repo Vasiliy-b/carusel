@@ -79,33 +79,43 @@ def process_text_input(tool_context: ToolContext) -> Dict[str, Any]:
         tool_context.state['input_mode'] = 'text'
         tool_context.state['batch_size_override'] = 1  # Force single iteration for text input
         
-        # Load reference images from environment if present
-        reference_images = {}
-        
-        style_img_path = os.getenv('REFERENCE_STYLE_IMAGE')
-        if style_img_path and os.path.exists(style_img_path):
+        # Load reference images from environment if present (supports multiple images)
+        import json as json_module
+        reference_images = {'style': [], 'persona': []}
+
+        # Load style images (JSON array of paths)
+        style_imgs_json = os.getenv('REFERENCE_STYLE_IMAGES')
+        if style_imgs_json:
             try:
-                with open(style_img_path, 'rb') as f:
-                    reference_images['style'] = f.read()
-                logger.info(f"TEXT_INPUT: Loaded STYLE reference from {style_img_path}")
+                style_paths = json_module.loads(style_imgs_json)
+                for path in style_paths:
+                    if os.path.exists(path):
+                        with open(path, 'rb') as f:
+                            reference_images['style'].append(f.read())
+                        logger.info(f"TEXT_INPUT: Loaded STYLE reference from {path}")
             except Exception as e:
-                logger.warning(f"TEXT_INPUT: Failed to load style image: {e}")
-        
-        persona_img_path = os.getenv('REFERENCE_PERSONA_IMAGE')
-        if persona_img_path and os.path.exists(persona_img_path):
+                logger.warning(f"TEXT_INPUT: Failed to load style images: {e}")
+
+        # Load persona images (JSON array of paths)
+        persona_imgs_json = os.getenv('REFERENCE_PERSONA_IMAGES')
+        if persona_imgs_json:
             try:
-                with open(persona_img_path, 'rb') as f:
-                    reference_images['persona'] = f.read()
-                logger.info(f"TEXT_INPUT: Loaded PERSONA reference from {persona_img_path}")
+                persona_paths = json_module.loads(persona_imgs_json)
+                for path in persona_paths:
+                    if os.path.exists(path):
+                        with open(path, 'rb') as f:
+                            reference_images['persona'].append(f.read())
+                        logger.info(f"TEXT_INPUT: Loaded PERSONA reference from {path}")
             except Exception as e:
-                logger.warning(f"TEXT_INPUT: Failed to load persona image: {e}")
-        
+                logger.warning(f"TEXT_INPUT: Failed to load persona images: {e}")
+
         # Store reference images in generation state if found
-        if reference_images:
+        total_refs = len(reference_images['style']) + len(reference_images['persona'])
+        if total_refs > 0:
             tool_context.state['generation_reference_images'] = reference_images
-            logger.info(f"TEXT_INPUT: Stored {len(reference_images)} reference image(s) in generation state")
-            for img_type, img_data in reference_images.items():
-                logger.info(f"TEXT_INPUT: {img_type.upper()} - {len(img_data)} bytes")
+            logger.info(f"TEXT_INPUT: Stored {total_refs} reference image(s) in generation state")
+            logger.info(f"TEXT_INPUT: STYLE - {len(reference_images['style'])} images")
+            logger.info(f"TEXT_INPUT: PERSONA - {len(reference_images['persona'])} images")
         else:
             logger.info(f"TEXT_INPUT: No reference images provided")
         
@@ -755,12 +765,13 @@ async def generate_all_images_parallel(
         
         logger.info(f"Found {len(image_prompts)} prompts for parallel generation")
         
-        # Get reference images if present
-        reference_images = tool_context.state.get('generation_reference_images', {})
-        if reference_images:
-            logger.info(f"PARALLEL_GEN: Found reference images: {list(reference_images.keys())}")
-            for img_type, img_data in reference_images.items():
-                logger.info(f"PARALLEL_GEN: {img_type} image size: {len(img_data)} bytes")
+        # Get reference images if present (now supports multiple images per type)
+        reference_images = tool_context.state.get('generation_reference_images', {'style': [], 'persona': []})
+        total_style = len(reference_images.get('style', []))
+        total_persona = len(reference_images.get('persona', []))
+        total_refs = total_style + total_persona
+        if total_refs > 0:
+            logger.info(f"PARALLEL_GEN: Found {total_refs} reference images (style: {total_style}, persona: {total_persona})")
         else:
             logger.info(f"PARALLEL_GEN: No reference images provided")
 
@@ -803,57 +814,66 @@ async def generate_all_images_parallel(
                     # Build content parts
                     parts = []
 
-                    # Build prompt with simple reference instructions
+                    # Build prompt with reference instructions for multiple images
                     prompt_parts = []
+                    style_images = reference_images.get('style', [])
+                    persona_images = reference_images.get('persona', [])
 
-                    # Add reference image instructions if present (SIMPLE AND CLEAR)
-                    if reference_images:
-                        if 'style' in reference_images:
-                            prompt_parts.append("Use the provided image as a style reference.")
-                        if 'persona' in reference_images:
-                            prompt_parts.append("Use the person from the provided image, preserving their facial features.")
+                    # Add reference image instructions if present
+                    if style_images:
+                        if len(style_images) == 1:
+                            prompt_parts.append("Use the provided style reference image to match its visual style and aesthetic.")
+                        else:
+                            prompt_parts.append(f"Use the {len(style_images)} provided style reference images to match their visual style and aesthetic.")
+                    if persona_images:
+                        if len(persona_images) == 1:
+                            prompt_parts.append("Use the provided character reference image, preserving their facial features and appearance.")
+                        else:
+                            prompt_parts.append(f"Use the {len(persona_images)} provided character reference images, preserving their facial features and appearance consistently.")
 
                     # Add main prompt
                     prompt_parts.append(prompt_text)
 
-                    # Add STYLE suffix ONLY if no style reference (avoid conflicts)
-                    if Config.STYLE and 'style' not in reference_images:
+                    # Add STYLE suffix ONLY if no style reference images (avoid conflicts)
+                    if Config.STYLE and not style_images:
                         prompt_parts.append(Config.STYLE)
                         logger.info(f"PARALLEL_GEN: [{idx+1}/10] Added global STYLE suffix")
-                    elif 'style' in reference_images:
-                        logger.info(f"PARALLEL_GEN: [{idx+1}/10] Skipped global STYLE (using reference image)")
+                    elif style_images:
+                        logger.info(f"PARALLEL_GEN: [{idx+1}/10] Skipped global STYLE (using {len(style_images)} reference image(s))")
 
                     full_text = " ".join(prompt_parts)
 
                     # Per Gemini docs: text first, then images
                     parts.append(types.Part(text=full_text))
 
-                    # Add reference images after text
-                    if reference_images:
-                        logger.info(f"PARALLEL_GEN: [{idx+1}/10] Adding {len(reference_images)} reference image(s)")
-                        if 'style' in reference_images:
-                            parts.append(types.Part(
-                                inline_data=types.Blob(
-                                    mime_type='image/png',
-                                    data=reference_images['style']
-                                )
-                            ))
-                            logger.info(f"PARALLEL_GEN: [{idx+1}/10] Added STYLE reference")
+                    # Add all reference images after text (style first, then persona)
+                    total_ref_count = len(style_images) + len(persona_images)
+                    if total_ref_count > 0:
+                        logger.info(f"PARALLEL_GEN: [{idx+1}/10] Adding {total_ref_count} reference image(s)")
 
-                        if 'persona' in reference_images:
+                        # Add style reference images
+                        for i, style_data in enumerate(style_images):
                             parts.append(types.Part(
                                 inline_data=types.Blob(
                                     mime_type='image/png',
-                                    data=reference_images['persona']
+                                    data=style_data
                                 )
                             ))
-                            logger.info(f"PARALLEL_GEN: [{idx+1}/10] Added PERSONA reference")
+                            logger.info(f"PARALLEL_GEN: [{idx+1}/10] Added STYLE reference {i+1}/{len(style_images)}")
+
+                        # Add persona/character reference images
+                        for i, persona_data in enumerate(persona_images):
+                            parts.append(types.Part(
+                                inline_data=types.Blob(
+                                    mime_type='image/png',
+                                    data=persona_data
+                                )
+                            ))
+                            logger.info(f"PARALLEL_GEN: [{idx+1}/10] Added PERSONA reference {i+1}/{len(persona_images)}")
 
                     logger.info(f"PARALLEL_GEN: [{idx + 1}/10] Text: '{image_text}'")
                     logger.info(f"PARALLEL_GEN: [{idx + 1}/10] Prompt length: {len(full_text)} chars")
-                    logger.info(f"PARALLEL_GEN: [{idx + 1}/10] Total parts: {len(parts)}")
-                    if reference_images:
-                        logger.info(f"PARALLEL_GEN: [{idx + 1}/10] Reference types: {list(reference_images.keys())}")
+                    logger.info(f"PARALLEL_GEN: [{idx + 1}/10] Total parts: {len(parts)} (1 text + {total_ref_count} images)")
 
                     # Generate image (run in thread to avoid blocking)
                     logger.info(f"PARALLEL_GEN: [{idx + 1}/10] Calling {Config.IMAGE_MODEL} API...")

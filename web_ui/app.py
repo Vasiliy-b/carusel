@@ -10,6 +10,7 @@ import glob
 import zipfile
 import re
 import logging
+import json
 from datetime import datetime
 from pathlib import Path
 from io import BytesIO
@@ -34,8 +35,8 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 logger.info("Flask app initialized")
 
-# Configure Flask for file uploads
-app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024  # 10MB max
+# Configure Flask for file uploads (up to 10 reference images)
+app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB max for multiple images
 app.config['UPLOAD_FOLDER'] = Path(__file__).parent.parent / 'temp' / 'uploads'
 app.config['UPLOAD_FOLDER'].mkdir(parents=True, exist_ok=True)
 
@@ -245,26 +246,31 @@ def generate_from_text():
     logger.info(f"GENERATE_TEXT: Received text input ({len(user_text)} chars)")
     logger.info(f"GENERATE_TEXT: Aspect ratio: {aspect_ratio}")
 
-    # Handle file uploads
-    reference_images = {}
+    # Handle multiple file uploads (up to 5 style + 5 persona = 10 total)
+    reference_images = {'style': [], 'persona': []}
 
-    if 'style_image' in request.files:
-        file = request.files['style_image']
+    # Process style images (multiple)
+    style_files = request.files.getlist('style_images')
+    for i, file in enumerate(style_files[:5]):  # Max 5 style images
         if file and file.filename and allowed_file(file.filename):
-            filename = secure_filename(f"style_{uuid.uuid4()}.png")
+            filename = secure_filename(f"style_{uuid.uuid4()}_{i}.png")
             filepath = app.config['UPLOAD_FOLDER'] / filename
             file.save(filepath)
-            reference_images['style'] = str(filepath)
-            logger.info(f"GENERATE_TEXT: STYLE image uploaded: {filename}")
+            reference_images['style'].append(str(filepath))
+            logger.info(f"GENERATE_TEXT: STYLE image {i+1} uploaded: {filename}")
 
-    if 'persona_image' in request.files:
-        file = request.files['persona_image']
+    # Process persona/character images (multiple)
+    persona_files = request.files.getlist('persona_images')
+    for i, file in enumerate(persona_files[:5]):  # Max 5 persona images
         if file and file.filename and allowed_file(file.filename):
-            filename = secure_filename(f"persona_{uuid.uuid4()}.png")
+            filename = secure_filename(f"persona_{uuid.uuid4()}_{i}.png")
             filepath = app.config['UPLOAD_FOLDER'] / filename
             file.save(filepath)
-            reference_images['persona'] = str(filepath)
-            logger.info(f"GENERATE_TEXT: PERSONA image uploaded: {filename}")
+            reference_images['persona'].append(str(filepath))
+            logger.info(f"GENERATE_TEXT: PERSONA image {i+1} uploaded: {filename}")
+
+    total_refs = len(reference_images['style']) + len(reference_images['persona'])
+    logger.info(f"GENERATE_TEXT: Total reference images: {total_refs} (style: {len(reference_images['style'])}, persona: {len(reference_images['persona'])})")
 
     job_id = str(uuid.uuid4())
     text_preview = user_text[:100] + "..." if len(user_text) > 100 else user_text
@@ -274,12 +280,13 @@ def generate_from_text():
         running_count = job_db.get_running_count()
         logger.warning(f"GENERATE_TEXT: At capacity ({running_count}/{job_db.MAX_CONCURRENT_JOBS})")
         # Cleanup uploaded files since we can't start the job
-        for img_path in reference_images.values():
-            try:
-                if os.path.exists(img_path):
-                    os.remove(img_path)
-            except:
-                pass
+        for img_paths in reference_images.values():
+            for img_path in img_paths:
+                try:
+                    if os.path.exists(img_path):
+                        os.remove(img_path)
+                except:
+                    pass
         return jsonify({
             "error": f"Max concurrent jobs ({job_db.MAX_CONCURRENT_JOBS}) reached. {running_count} running.",
             "running_count": running_count,
@@ -309,7 +316,7 @@ def run_generator_async_text_mode(job_id, user_text, reference_images, aspect_ra
     """Run generator in text input mode"""
     logger.info(f"BACKGROUND_TEXT: Starting text mode generation for job {job_id}")
     logger.info(f"BACKGROUND_TEXT: Text length: {len(user_text)} chars")
-    logger.info(f"BACKGROUND_TEXT: Reference images: {list(reference_images.keys())}")
+    logger.info(f"BACKGROUND_TEXT: Reference images - style: {len(reference_images.get('style', []))}, persona: {len(reference_images.get('persona', []))}")
     logger.info(f"BACKGROUND_TEXT: Aspect ratio: {aspect_ratio}")
 
     try:
@@ -320,14 +327,13 @@ def run_generator_async_text_mode(job_id, user_text, reference_images, aspect_ra
         env['USER_TEXT_INPUT'] = user_text
         env['IMAGE_ASPECT_RATIO'] = aspect_ratio
 
-        # Pass reference image paths as env vars
-        if reference_images:
-            if 'style' in reference_images:
-                env['REFERENCE_STYLE_IMAGE'] = reference_images['style']
-                logger.info(f"BACKGROUND_TEXT: Set REFERENCE_STYLE_IMAGE env var")
-            if 'persona' in reference_images:
-                env['REFERENCE_PERSONA_IMAGE'] = reference_images['persona']
-                logger.info(f"BACKGROUND_TEXT: Set REFERENCE_PERSONA_IMAGE env var")
+        # Pass reference image paths as JSON env vars (supports multiple images)
+        if reference_images.get('style'):
+            env['REFERENCE_STYLE_IMAGES'] = json.dumps(reference_images['style'])
+            logger.info(f"BACKGROUND_TEXT: Set REFERENCE_STYLE_IMAGES env var ({len(reference_images['style'])} images)")
+        if reference_images.get('persona'):
+            env['REFERENCE_PERSONA_IMAGES'] = json.dumps(reference_images['persona'])
+            logger.info(f"BACKGROUND_TEXT: Set REFERENCE_PERSONA_IMAGES env var ({len(reference_images['persona'])} images)")
 
         venv_python = BASE_DIR / ".venv" / "bin" / "python"
         if not venv_python.exists():
@@ -374,15 +380,16 @@ def run_generator_async_text_mode(job_id, user_text, reference_images, aspect_ra
         job_db.fail_job(job_id, str(e))
 
     finally:
-        # Cleanup uploaded files
+        # Cleanup uploaded files (handle lists of paths)
         logger.info(f"BACKGROUND_TEXT: Cleaning up uploaded files...")
-        for img_type, img_path in reference_images.items():
-            try:
-                if os.path.exists(img_path):
-                    os.remove(img_path)
-                    logger.info(f"BACKGROUND_TEXT: Deleted {img_type} image: {img_path}")
-            except Exception as e:
-                logger.warning(f"BACKGROUND_TEXT: Failed to delete {img_path}: {e}")
+        for img_type, img_paths in reference_images.items():
+            for img_path in img_paths:
+                try:
+                    if os.path.exists(img_path):
+                        os.remove(img_path)
+                        logger.info(f"BACKGROUND_TEXT: Deleted {img_type} image: {img_path}")
+                except Exception as e:
+                    logger.warning(f"BACKGROUND_TEXT: Failed to delete {img_path}: {e}")
 
 
 @app.route('/update-style', methods=['POST'])

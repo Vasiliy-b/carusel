@@ -146,15 +146,21 @@
                 </div>
                 
                 <div class="form-group">
-                    <label for="styleImage">🎨 Style Reference (optional)</label>
-                    <input type="file" id="styleImage" name="style_image" accept="image/png,image/jpeg,image/jpg,image/webp">
-                    <small>Upload an image to match its visual style and aesthetic</small>
+                    <label for="styleImages">🎨 Style References (optional, up to 5)</label>
+                    <input type="file" id="styleImages" name="style_images" accept="image/png,image/jpeg,image/jpg,image/webp" multiple>
+                    <small>Upload images to match their visual style and aesthetic</small>
+                    <div id="stylePreview" class="file-preview"></div>
                 </div>
-                
+
                 <div class="form-group">
-                    <label for="personaImage">👤 Persona Reference (optional)</label>
-                    <input type="file" id="personaImage" name="persona_image" accept="image/png,image/jpeg,image/jpg,image/webp">
-                    <small>Upload a person's photo to preserve their facial features</small>
+                    <label for="personaImages">👤 Character References (optional, up to 5)</label>
+                    <input type="file" id="personaImages" name="persona_images" accept="image/png,image/jpeg,image/jpg,image/webp" multiple>
+                    <small>Upload photos to preserve character facial features</small>
+                    <div id="personaPreview" class="file-preview"></div>
+                </div>
+
+                <div class="reference-counter">
+                    <span id="refCount">0</span>/10 reference images selected
                 </div>
                 
                 <button type="submit" class="btn-primary">🚀 Generate Carousel</button>
@@ -182,6 +188,48 @@
             modal.style.display = 'none';
         }
     }
+
+    // File upload handling with validation
+    const styleInput = document.getElementById('styleImages');
+    const personaInput = document.getElementById('personaImages');
+    const refCountSpan = document.getElementById('refCount');
+
+    function updateRefCount() {
+        const styleCount = styleInput.files ? styleInput.files.length : 0;
+        const personaCount = personaInput.files ? personaInput.files.length : 0;
+        refCountSpan.textContent = styleCount + personaCount;
+    }
+
+    function validateFiles(input, maxFiles, previewId) {
+        const preview = document.getElementById(previewId);
+        preview.innerHTML = '';
+
+        if (input.files.length > maxFiles) {
+            alert(`Maximum ${maxFiles} files allowed. Only first ${maxFiles} will be used.`);
+            // Create new DataTransfer to limit files
+            const dt = new DataTransfer();
+            for (let i = 0; i < maxFiles; i++) {
+                dt.items.add(input.files[i]);
+            }
+            input.files = dt.files;
+        }
+
+        // Show preview thumbnails
+        for (const file of input.files) {
+            const thumb = document.createElement('div');
+            thumb.className = 'thumb';
+            const img = document.createElement('img');
+            img.src = URL.createObjectURL(file);
+            img.onload = () => URL.revokeObjectURL(img.src);
+            thumb.appendChild(img);
+            preview.appendChild(thumb);
+        }
+
+        updateRefCount();
+    }
+
+    styleInput.addEventListener('change', () => validateFiles(styleInput, 5, 'stylePreview'));
+    personaInput.addEventListener('change', () => validateFiles(personaInput, 5, 'personaPreview'));
 
     // Form submission
     document.getElementById('textInputForm').addEventListener('submit', async function(e) {
